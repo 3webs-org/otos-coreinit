@@ -1,4 +1,5 @@
 #include "job_exec.h"
+#include "arch_cpu.h"
 
 static uint8_t g_job_stacks[JOB_EXEC_MAX_RESIDENT][JOB_EXEC_STACK_SIZE]
     __attribute__((aligned(16)));
@@ -112,9 +113,7 @@ void job_exec_wait(job_wait_queue_t *q)
         /* Nothing else ready at all -- Phase A has no real idle job
          * yet to fall back to; this is a genuine "nothing left to run"
          * condition, not something to paper over. */
-        for (;;) {
-            __asm__ volatile("hlt");
-        }
+        arch_halt_forever();
     }
     int next_idx = (int)(next - g_job_table);
     g_job_table[next_idx].state = JOB_EXEC_RUNNING;

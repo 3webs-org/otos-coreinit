@@ -2,6 +2,7 @@
 #include "capnp_build.h"
 #include "cluster_scheduler.h"
 #include "serial.h"
+#include "arch_cpu.h"
 
 /* Method IDs on the cluster scheduler object -- must match
  * cluster_scheduler.c's own METHOD_* defines exactly; duplicated here
@@ -265,14 +266,14 @@ void scheduler_run(void)
         if (!g_invoke(g_cluster_scheduler, CS_METHOD_GET_NEXT_JOB, self_req,
                      self_req_len, resp, sizeof(resp), &resp_len) ||
             resp_len < 48) {
-            __asm__ volatile("hlt");
+            arch_idle();
             continue;
         }
 
         const uint64_t *out = capnp_read_flat(resp);
         uint64_t found = out[0];
         if (!found) {
-            __asm__ volatile("hlt");
+            arch_idle();
             continue;
         }
 
@@ -283,8 +284,16 @@ void scheduler_run(void)
         job_result_t result = JOB_FINISHED;
         uint64_t block_id = 0;
         if (job_type < JOB_TYPE_COUNT && g_job_type_table[job_type]) {
+            /* Anything this job prints reserves the serial port as the job
+             * itself, rather than as whatever this core last ran. Restored
+             * afterwards to the bringup job, so output from the scheduler's
+             * own loop stays attributable too and never reserves as a job
+             * that has finished. */
+            uint64_t previous_job = serial_current_job();
+            serial_set_current_job(job_id);
             result = g_job_type_table[job_type]((void *)(uintptr_t)ctx,
                                                 job_id, &block_id);
+            serial_set_current_job(previous_job);
         } else {
             kprintf("[coreinit]   scheduler: got unknown job type %u, "
                     "reporting finished\n",

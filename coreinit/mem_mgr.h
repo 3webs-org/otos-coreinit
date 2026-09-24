@@ -41,7 +41,24 @@ void memory_manager_handler(void *data, uint32_t method_id, const void *msg,
                             size_t len, void *response, size_t response_cap,
                             size_t *out_response_len);
 
-void memory_manager_init_schema(void);
+/* kernel_image_base/len come straight from boot_info -- the kernel measures
+ * its own loaded image (macho_image_size over its own __mh_execute_header)
+ * rather than either side naming an address. Passing them in keeps this file
+ * from having to know, or restate, where the kernel put itself. len == 0
+ * means the kernel could not measure itself, which it reports as a warning of
+ * its own; this file then declines to guess rather than reserving a made-up
+ * span. */
+void memory_manager_init_schema(uint64_t kernel_image_base,
+                                uint64_t kernel_image_len,
+                                uint64_t free_base, uint64_t free_size,
+                                uint64_t self_image_base);
+
+/* The allocatable window this object actually settled on, for anything that
+ * needs to describe it rather than allocate from it (cluster_scheduler.c's
+ * pool resource). Reported rather than shared as a constant, because it is
+ * computed at init from what the machine turned out to have -- there is no
+ * compile-time answer to hand out. Both 0 if no usable window was found. */
+void memory_manager_window(uint64_t *out_base, uint64_t *out_size);
 
 #define MEM_KIND_MMIO 0
 #define MEM_KIND_KERNEL_RESERVED 1

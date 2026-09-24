@@ -1,4 +1,5 @@
 #include "smp.h"
+#include "arch_mmu.h"
 #include "ap_trampoline_blob.h"
 #include "capnp_build.h"
 #include "cluster_scheduler.h"
@@ -213,13 +214,44 @@ void smp_bring_up_all(const acpi_info_t *acpi, uint8_t bsp_apic_id,
                  cluster_scheduler.handle);
         write_u64(region_base + CORE_DISCOVERY_OFFSET + CORE_DISCOVERY_SERIAL_RESOURCE_OFF,
                  serial_resource.handle);
+        write_u64(region_base + CORE_DISCOVERY_OFFSET + CORE_DISCOVERY_RSDP_OFF,
+                 acpi->rsdp_phys);
 
+        /* This core's own page tables, and the request telling the kernel
+         * what to do with this core. Both are init's decisions: the kernel
+         * built the tables itself until recently, and worked the load
+         * address out of these same layout constants -- neither of which
+         * it has any business knowing. It now loads the PML4 named here
+         * and places init where this says. */
+        struct ap_boot_request *req = (struct ap_boot_request *)(uintptr_t)(
+            region_base + CORE_BOOT_REQUEST_OFFSET);
+        req->init_image_addr = info->init_image_addr;
+        req->init_load_target = region_base + CORE_INIT_OFFSET;
+        req->pml4_phys = arch_build_page_tables(region_base);
+        req->kernel_load_base = region_base + CORE_KERNEL_OFFSET;
+        /* This core's bringup, as a real job. Submitted before the core is
+         * started, with that core's own apic_id as affinity, so the id is
+         * already valid by the time it reaches coreinit_main over there.
+         * The job is never dispatched by the scheduler -- the core is
+         * running it, not waiting to be given it -- it exists to BE an
+         * identity, which is what the serial resource's RESERVE needs. */
+        req->bringup_job_id = scheduler_submit_to_node(
+            acpi->cpus[i].apic_id, JOB_TYPE_KERNEL_BRINGUP,
+            (uint64_t)region_base, 99, 0, RESOURCE_KIND_NONE, 0);
+        req->init_private = region_base;
+
+        /* The trampoline still enters long mode on the BSP's tables --
+         * known good, and identity-mapped over everything this touches --
+         * and the kernel switches to this core's own immediately after. */
         write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_PML4_OFF, info->pml4_phys);
         write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_GDT64_PTR_OFF,
                  (uint64_t)(uintptr_t)&g_ap_gdt_ptr);
         write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_ENTRY64_OFF, entry64);
         write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_STACK_OFF, stack_top);
-        write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_REGION_BASE_OFF, region_base);
+        /* RDI for kernel_boot_ap: the request, not a bare region base.
+         * The trampoline relays this value without interpreting it. */
+        write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_REGION_BASE_OFF,
+                 (uint64_t)(uintptr_t)req);
 
         /* A demo job for the AP's own scheduler_run to pick up on its
          * very first GET_NEXT_JOB call, once it's booted and joined --

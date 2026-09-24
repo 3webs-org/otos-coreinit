@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ownership.h>
+
 #include <stddef.h>
 #include <stdint.h>
 #include "cap.h"
@@ -76,4 +78,12 @@ void irq_mask_irq0(void);
  * IDT register, since the CPU reads the array directly rather than a
  * cached copy. Used by lapic_timer.c to add its own vector without
  * needing a second, separate IDT. */
+/* async_signal_safe: whatever is installed here runs in interrupt context,
+ * so the signal-safety checker treats the handler argument the way it
+ * treats a signal handler -- anything it reaches must be reentrant. The
+ * build already warns about the neighbouring hazard (-Wexcessive-regsave:
+ * an ISR calling a function that is neither no_caller_saved_registers nor
+ * built -mgeneral-regs-only); this is the other half of the same concern,
+ * about what those functions DO rather than which registers they clobber. */
+async_signal_safe
 void irq_install_gate(int vector, void *handler_addr);

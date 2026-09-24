@@ -43,7 +43,14 @@ typedef enum {
     JOB_TYPE_PAGEFAULT_DEMO = 6,
     JOB_TYPE_STREAM_SETUP = 7,
     JOB_TYPE_STREAM_COW_VERIFY = 8,
-    JOB_TYPE_COUNT = 9,
+    /* An AP's own kernel bringup, submitted by the BSP before that core
+     * is started. It exists to give bringup a real job identity rather
+     * than leaving it an unattributed context: the serial resource's
+     * RESERVE is keyed by job id, so without one there is nothing for a
+     * bringing-up core to reserve the UART as, and its output interleaves
+     * mid-token with whatever else is printing. */
+    JOB_TYPE_KERNEL_BRINGUP = 9,
+    JOB_TYPE_COUNT = 10,
 } job_type_t;
 
 /* Registers the LOCAL function for a job type. Called once per node,

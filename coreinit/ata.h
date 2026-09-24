@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ownership.h>
+
 #include <stdint.h>
 
 /* Minimal ATA PIO driver: primary channel (I/O base 0x1F0, control
@@ -12,4 +14,5 @@
  * Returns 1 on success, 0 on failure (drive not present, error status,
  * or timeout).
  */
+fallible
 int ata_read_sector(uint32_t lba, void *buf512);

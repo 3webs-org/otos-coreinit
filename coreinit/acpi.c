@@ -156,6 +156,7 @@ int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys)
 {
     out->cpu_count = 0;
     out->local_apic_address = 0;
+    out->rsdp_phys = 0;
 
     const rsdp_t *rsdp = early_rsdp_phys ? validate_rsdp((uintptr_t)early_rsdp_phys)
                                          : find_rsdp();
@@ -164,6 +165,7 @@ int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys)
         return 0;
     }
     kprintf("[coreinit]   acpi: RSDP found, revision %u\n", rsdp->revision);
+    out->rsdp_phys = (uint64_t)(uintptr_t)rsdp;
 
     const sdt_header_t *madt = NULL;
     if (rsdp->revision >= 2 && rsdp->xsdt_address != 0) {

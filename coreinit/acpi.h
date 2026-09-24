@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ownership.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,6 +22,13 @@ typedef struct {
                                   * region, from the MADT header -- needed
                                   * later for the actual INIT-SIPI-SIPI
                                   * sequence, not used by discovery itself */
+    uint64_t rsdp_phys; /* the RSDP this call actually validated, whether it
+                         * was handed in or found by the legacy scan. Recorded
+                         * so it can be passed on: an AP cannot find the RSDP
+                         * itself (see smp.c, which writes this into each AP's
+                         * own discovery record), and forwarding the address
+                         * that already passed its checksum here beats making
+                         * every core rediscover it. 0 if discovery failed. */
 } acpi_info_t;
 
 /* Finds the RSDP, validates it, walks the RSDT or XSDT (whichever the
@@ -41,4 +50,5 @@ typedef struct {
  * via init_boot_info's early_rsdp_phys field -- see that field's
  * own comment for the full story. A nonzero value handed in here is
  * still re-validated by checksum, not trusted blindly. */
+fallible
 int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys);

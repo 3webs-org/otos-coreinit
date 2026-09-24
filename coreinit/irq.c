@@ -1,5 +1,6 @@
 #include "irq.h"
 #include "arch_x86_64.h"
+#include "arch_cpu.h"
 #include "capnp_build.h"
 #include "schema.h"
 #include "serial.h"
@@ -188,9 +189,7 @@ __attribute__((interrupt)) static void isr_double_fault(
            "rflags=0x%X rsp=0x%X ss=0x%X\n",
            (unsigned)frame->ip, (unsigned)frame->cs, (unsigned)frame->flags,
            (unsigned)frame->sp, (unsigned)frame->ss);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 __attribute__((interrupt)) static void isr_general_protection(
@@ -200,9 +199,7 @@ __attribute__((interrupt)) static void isr_general_protection(
            "faulting rip=0x%X cs=0x%X rflags=0x%X rsp=0x%X ss=0x%X\n",
            (unsigned)error_code, (unsigned)frame->ip, (unsigned)frame->cs,
            (unsigned)frame->flags, (unsigned)frame->sp, (unsigned)frame->ss);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 static void setup_tss_and_ist(void)

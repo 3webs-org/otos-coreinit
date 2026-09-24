@@ -17,6 +17,7 @@
  */
 
 #include "arch_x86_64.h"
+#include "arch_cpu.h"
 #include "acpi.h"
 #include "ata.h"
 #include "cap.h"
@@ -127,6 +128,61 @@ static capability_t create_object(object_handler_fn handler, void *data,
  * byte-at-a-time UART transmission each print involves. Not usable
  * outside a job's own context -- self_job_id has to mean something to
  * the resource's own RESERVE method. */
+/* Which job this core is currently running. Every context now has one:
+ * a dispatched job has its own, and a core still coming up has the job the
+ * BSP submitted for its bringup (JOB_TYPE_KERNEL_BRINGUP). That is the
+ * whole point of giving bringup a job -- the serial resource's RESERVE is
+ * keyed by job id, so a context without one had nothing to reserve the
+ * UART as, and printed straight into whatever another core was emitting.
+ *
+ * Per-core by construction: every core runs its own copy of this binary
+ * with its own globals, which is exactly why a plain lock here would
+ * serialise nothing and the shared resource object is the mechanism. */
+static uint64_t g_current_job_id;
+
+void serial_set_current_job(uint64_t job_id)
+{
+    g_current_job_id = job_id;
+}
+
+uint64_t serial_current_job(void)
+{
+    return g_current_job_id;
+}
+
+/* The two halves of serial.h's guard. Try-once, never waits: RESERVE is a
+ * single compare-and-swap inside the resource object, and it is idempotent
+ * for a job that already holds it, so a print nested inside another print
+ * on this same core cannot deadlock against itself. */
+static int serial_guard_reserve(void)
+{
+    if (g_serial_resource.handle == 0 || g_current_job_id == 0) {
+        return 1; /* nothing to reserve with yet -- print unguarded */
+    }
+    uint64_t words[1] = {g_current_job_id};
+    uint8_t req[24];
+    size_t req_len = capnp_build_flat(req, sizeof(req), words, 1);
+    uint8_t resp[24];
+    size_t resp_len = 0;
+    return g_kernel_invoke(g_serial_resource, RESOURCE_METHOD_RESERVE, req,
+                           req_len, resp, sizeof(resp), &resp_len) &&
+           resp_len >= 24 && capnp_read_flat(resp)[0] != 0;
+}
+
+static void serial_guard_release(void)
+{
+    if (g_serial_resource.handle == 0 || g_current_job_id == 0) {
+        return;
+    }
+    uint64_t words[1] = {g_current_job_id};
+    uint8_t req[24];
+    size_t req_len = capnp_build_flat(req, sizeof(req), words, 1);
+    uint8_t resp[24];
+    size_t resp_len = 0;
+    g_kernel_invoke(g_serial_resource, RESOURCE_METHOD_RELEASE_RESERVATION,
+                    req, req_len, resp, sizeof(resp), &resp_len);
+}
+
 static void job_kprintf(uint64_t self_job_id, const char *fmt, ...)
 {
     if (g_serial_resource.handle == 0) {
@@ -188,9 +244,7 @@ static void job_exec_test_a(uint64_t arg)
     kprintf("[coreinit]   job_exec test: A done, switching back to the "
             "driver\n");
     job_exec_switch(&g_test_job_a_rsp, g_test_driver_rsp);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 static void job_exec_test_b(uint64_t arg)
@@ -202,9 +256,7 @@ static void job_exec_test_b(uint64_t arg)
         job_exec_switch(&g_test_job_b_rsp, g_test_job_a_rsp);
     }
     kprintf("[coreinit]   job_exec test: B done\n");
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 static void run_job_exec_test(void)
@@ -279,9 +331,7 @@ static void job_exec_priority_test_high(uint64_t arg)
     job_exec_wait(&g_test_high_done_q); /* park forever -- nobody wakes
                                         * this; just gets HIGH out of
                                         * the way once it's done */
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 static void job_exec_priority_test_med(uint64_t arg)
@@ -289,9 +339,7 @@ static void job_exec_priority_test_med(uint64_t arg)
     (void)arg;
     record_test_event(EVT_MED_RAN);
     job_exec_wait(&g_test_med_done_q); /* park forever */
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 static void job_exec_priority_test_low(uint64_t arg)
@@ -304,9 +352,7 @@ static void job_exec_priority_test_low(uint64_t arg)
      * rescheduled again, AFTER HIGH parks itself. */
     record_test_event(EVT_LOW_BACKGROUND);
     job_exec_switch(job_exec_current_rsp_slot(), g_priority_test_driver_rsp);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 static void run_job_exec_priority_test(void)
@@ -509,7 +555,7 @@ static void hw_mutex_lock(void)
             resp_len >= 8 && capnp_read_flat(resp)[0] != 0) {
             return; /* acquired */
         }
-        __asm__ volatile("hlt");
+        arch_idle();
     }
 }
 
@@ -624,7 +670,7 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
      * signal path reports FAIL instead of hanging boot forever. */
     for (int spins = 0; spins < 1000 && !g_cross_core_signal_test_seen;
         spins++) {
-        __asm__ volatile("hlt");
+        arch_idle();
     }
     job_kprintf(self_job_id, "[coreinit]   cross_core_signal: self-test %s\n",
                g_cross_core_signal_test_seen ? "PASS" : "FAIL");
@@ -971,6 +1017,24 @@ static job_result_t job_stream_cow_verify(void *ctx, uint64_t self_job_id,
  * bootstrap uses -- see scheduler.h's own note on why this must be the
  * SAME set everywhere: a job_type value crossing a core boundary is
  * only meaningful if every core resolves it to the matching function. */
+/* The bringup job's own body, which never runs.
+ *
+ * Every node registers the identical (type, fn) set, because every node
+ * runs a byte-identical binary and cross-node dispatch resolves a job
+ * type through that table rather than shipping a function pointer. This
+ * type is submitted for a core that is about to start and is already
+ * executing its own bringup by the time the job exists -- so nothing ever
+ * asks the scheduler for it. It reports finished if anything ever does,
+ * rather than leaving a job the cluster believes is still runnable. */
+static job_result_t job_kernel_bringup(void *ctx, uint64_t self_job_id,
+                                       uint64_t *out_block_id)
+{
+    (void)ctx;
+    (void)self_job_id;
+    (void)out_block_id;
+    return JOB_FINISHED;
+}
+
 static void register_job_types(void)
 {
     scheduler_register_job_type(JOB_TYPE_PCI_SCAN, job_pci_scan);
@@ -981,6 +1045,7 @@ static void register_job_types(void)
     scheduler_register_job_type(JOB_TYPE_RESOURCE_DEMO, job_resource_demo);
     scheduler_register_job_type(JOB_TYPE_PAGEFAULT_DEMO, job_pagefault_demo);
     scheduler_register_job_type(JOB_TYPE_STREAM_SETUP, job_stream_setup);
+    scheduler_register_job_type(JOB_TYPE_KERNEL_BRINGUP, job_kernel_bringup);
     scheduler_register_job_type(JOB_TYPE_STREAM_COW_VERIFY,
                                 job_stream_cow_verify);
 }
@@ -1018,7 +1083,43 @@ void coreinit_main(struct init_boot_info *info)
      * claims regions via the memory manager) -- both jobs, but this
      * part stays plain bootstrap since everything after it depends on
      * it existing. */
-    int is_bsp = (info->bsp_kernel_invoke_addr == 0);
+    /* Nobody asked the BSP to start, so it has no boot request -- the
+     * honest discriminator, and one the kernel cannot get wrong. */
+    int is_bsp = (info->ap_request == 0);
+
+    /* This core's own discovery record. The kernel used to read this and
+     * hand the values over field by field in boot_info, which meant it had
+     * to know a layout that is entirely init's -- see init_abi.h's note on
+     * struct ap_boot_request. init finds its own record now, from the
+     * region base it put in the request itself. */
+    /* The job the BSP submitted for this core's own bringup. This is what
+     * gives bringup-phase output an identity to reserve the serial port
+     * as -- without it, an AP printing while the BSP prints interleaves
+     * mid-token, because the resource's RESERVE is keyed by job id and a
+     * core with no job has nothing to offer it. 0 on the BSP, which is
+     * nobody's AP and holds the resource directly. */
+    uint64_t my_bringup_job = is_bsp ? 0 : info->ap_request->bringup_job_id;
+    serial_set_current_job(my_bringup_job);
+
+    uint64_t my_region_base = BSP_MAILBOX_REGION_BASE;
+    uint64_t disc_bsp_invoke = 0, disc_mutex_mgr = 0, disc_mem_mgr = 0;
+    uint64_t disc_hw_mutex_id = 0, disc_lapic_calibration = 0;
+    uint64_t disc_cluster_sched = 0, disc_serial_resource = 0;
+    uint64_t disc_rsdp = 0;
+    if (!is_bsp) {
+        my_region_base = info->ap_request->init_private;
+        const uint64_t *d = (const uint64_t *)(uintptr_t)(
+            my_region_base + CORE_DISCOVERY_OFFSET);
+        disc_bsp_invoke = d[CORE_DISCOVERY_BSP_INVOKE_OFF / 8];
+        disc_mutex_mgr = d[CORE_DISCOVERY_MUTEX_MGR_OFF / 8];
+        disc_mem_mgr = d[CORE_DISCOVERY_MEM_MGR_OFF / 8];
+        disc_hw_mutex_id = d[CORE_DISCOVERY_HW_MUTEX_ID_OFF / 8];
+        disc_lapic_calibration = d[CORE_DISCOVERY_LAPIC_CALIBRATION_OFF / 8];
+        disc_cluster_sched = d[CORE_DISCOVERY_CLUSTER_SCHED_OFF / 8];
+        disc_serial_resource = d[CORE_DISCOVERY_SERIAL_RESOURCE_OFF / 8];
+        disc_rsdp = d[CORE_DISCOVERY_RSDP_OFF / 8];
+    }
+    (void)disc_mem_mgr;
 
     /* This core's own pml4_phys -- see kernel.c's build_ap_page_tables
      * for why every core now has an independent one -- needed by
@@ -1034,7 +1135,10 @@ void coreinit_main(struct init_boot_info *info)
         mutex_manager_init_schema();
         mutex_manager = create_object(mutex_manager_handler, NULL,
                                       &g_mutex_manager_schema);
-        memory_manager_init_schema();
+        memory_manager_init_schema(info->kernel_image_addr,
+                                   info->kernel_image_len,
+                                   info->free_base, info->free_size,
+                                   info->init_load_base);
         memory_manager = create_object(memory_manager_handler, NULL,
                                        &g_memory_manager_schema);
         kprintf("[coreinit] mutex_manager handle %u, memory_manager "
@@ -1068,9 +1172,9 @@ void coreinit_main(struct init_boot_info *info)
          * though it will never run the real handler logic locally. */
         mutex_manager_build_schema();
         remote_invoke_fn_t bsp_invoke =
-            (remote_invoke_fn_t)(uintptr_t)info->bsp_kernel_invoke_addr;
+            (remote_invoke_fn_t)(uintptr_t)disc_bsp_invoke;
         capability_t remote_mutex_manager;
-        remote_mutex_manager.handle = info->mutex_manager_handle;
+        remote_mutex_manager.handle = disc_mutex_mgr;
 
         /* A LOCAL proxy, not the raw remote pair -- from here on,
          * g_hw_mutex_manager is an ordinary local capability, invoked
@@ -1080,7 +1184,7 @@ void coreinit_main(struct init_boot_info *info)
         g_hw_mutex_manager = create_proxy(remote_mutex_manager, bsp_invoke,
                                           &g_mutex_manager_schema);
         g_hw_mutex_invoke = g_kernel_invoke;
-        g_hw_mutex_id = info->hardware_mutex_id;
+        g_hw_mutex_id = disc_hw_mutex_id;
         kprintf("[coreinit] mutex_manager reachable via local proxy handle "
                 "%u, hardware mutex id %u\n",
                 (unsigned)g_hw_mutex_manager.handle, (unsigned)g_hw_mutex_id);
@@ -1100,9 +1204,9 @@ void coreinit_main(struct init_boot_info *info)
                 (unsigned)cluster_scheduler.handle);
     } else {
         capability_t remote_cluster_scheduler;
-        remote_cluster_scheduler.handle = info->cluster_scheduler_handle;
+        remote_cluster_scheduler.handle = disc_cluster_sched;
         remote_invoke_fn_t bsp_invoke =
-            (remote_invoke_fn_t)(uintptr_t)info->bsp_kernel_invoke_addr;
+            (remote_invoke_fn_t)(uintptr_t)disc_bsp_invoke;
         cluster_scheduler_build_schema(); /* same reasoning as
                                            * mutex_manager_build_schema
                                            * above */
@@ -1146,7 +1250,7 @@ void coreinit_main(struct init_boot_info *info)
      * APIC ID", the name predates this also running on APs. */
     static acpi_info_t acpi;
     uint8_t bsp_apic_id = my_apic_id;
-    int have_acpi = acpi_discover(&acpi, info->early_rsdp_phys);
+    int have_acpi = acpi_discover(&acpi, (is_bsp ? info->early_rsdp_phys : disc_rsdp));
     if (have_acpi) {
         kprintf("[coreinit] this core's own APIC ID: %u\n",
                 (unsigned)bsp_apic_id);
@@ -1163,12 +1267,29 @@ void coreinit_main(struct init_boot_info *info)
      * join_node needs a real apic_id, which defaults sensibly to 0 if
      * ACPI discovery somehow failed. */
     register_job_types();
-    uint64_t my_region_base = is_bsp ? BSP_MAILBOX_REGION_BASE
-                                     : (info->own_mailbox_base - CORE_MAILBOX_OFFSET);
     /* Always the LOCAL kernel_invoke now -- cluster_scheduler is either
      * genuinely local (BSP) or a local proxy (AP), so there's no more
      * "which invoke function" special-casing needed here at all. */
     scheduler_client_init(g_kernel_invoke, cluster_scheduler, bsp_apic_id);
+
+    /* The BSP's own bringup job, submitted for itself, so both kinds of
+     * core reach the serial port the same way. An AP's was submitted by
+     * the BSP before it started (smp.c); the BSP has no-one to do that for
+     * it, and could not have had one earlier anyway -- the cluster
+     * scheduler it is submitted to is created a few lines above.
+     *
+     * With that, every core holds a distinct, stable job id, which is all
+     * the serial resource needs to keep two of them out of each other's
+     * output: RESERVE is one compare-and-swap on that id, so exactly one
+     * core can hold the port and the other skips its line rather than
+     * printing into the middle of it. */
+    if (is_bsp) {
+        my_bringup_job = scheduler_submit_to_node(
+            bsp_apic_id, JOB_TYPE_KERNEL_BRINGUP, 0, 99, 0,
+            RESOURCE_KIND_NONE, 0);
+        serial_set_current_job(my_bringup_job);
+    }
+    serial_set_guard(serial_guard_reserve, serial_guard_release);
 
     uint64_t reg_words[4] = {bsp_apic_id, CLUSTER_ARCH_X86_64, my_region_base,
                              cross_core_signal_my_target()};
@@ -1208,9 +1329,9 @@ void coreinit_main(struct init_boot_info *info)
                 (unsigned)g_serial_resource.handle);
     } else {
         capability_t remote_serial;
-        remote_serial.handle = info->serial_resource_handle;
+        remote_serial.handle = disc_serial_resource;
         remote_invoke_fn_t bsp_invoke =
-            (remote_invoke_fn_t)(uintptr_t)info->bsp_kernel_invoke_addr;
+            (remote_invoke_fn_t)(uintptr_t)disc_bsp_invoke;
         resource_object_build_schema(); /* same reasoning as
                                          * mutex_manager_build_schema /
                                          * cluster_scheduler_build_schema
@@ -1229,7 +1350,7 @@ void coreinit_main(struct init_boot_info *info)
         static timer_job_ctx_t timer_ctx;
         timer_ctx.acpi = &acpi;
         timer_ctx.is_bsp = is_bsp;
-        timer_ctx.discovered_lapic_calibration = info->lapic_calibration_count;
+        timer_ctx.discovered_lapic_calibration = disc_lapic_calibration;
         scheduler_submit(JOB_TYPE_TIMER_BRINGUP, &timer_ctx, 100, 0, RESOURCE_KIND_NONE, 0);
 
         static smp_job_ctx_t smp_ctx;

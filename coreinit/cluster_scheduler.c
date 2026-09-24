@@ -1,8 +1,10 @@
 #include "cluster_scheduler.h"
+#include "mem_mgr.h"
 #include "capnp_build.h"
 #include "schema.h"
 #include "scheduler.h"
 #include "serial.h"
+#include "arch_cpu.h"
 #include "try_lock.h"
 #include "../include/smp_layout.h"
 
@@ -192,10 +194,11 @@ static trylock_t g_storage_lock;
  * again" is a perfectly good fit -- there's no job context here to
  * job_exec_wait on instead, this runs as a plain synchronous
  * kernel_invoke handler. */
+static void storage_lock_acquire_wait(void) lock_acquires_for_caller;
 static void storage_lock_acquire_wait(void)
 {
     while (!trylock_try_acquire(&g_storage_lock)) {
-        __asm__ volatile("hlt");
+        arch_idle();
     }
 }
 
@@ -1024,22 +1027,26 @@ void cluster_scheduler_init_schema(
     job_object_build_schema();
     create_all_mutex_objects();
 
-    /* The pool resource: the whole allocatable window (see
-     * smp_layout.h's ALLOC_MIN/ALLOC_MAX, which mem_mgr.c's own
-     * alloc/free also use), declared once so it's queryable via
-     * GET_RESOURCE_INFO the same as any other resource -- "the
-     * allocator owns the entire physical memory resource," made
-     * literal. Owned by node 0 (the BSP), since mem_mgr itself only
-     * ever runs there. Its handle is purely informational, not a
-     * dependency for allocate/release -- those are guarded by
-     * ALLOCATOR_MUTEX_ID, not by this resource's own reserved_by. */
+    /* The pool resource: the whole allocatable window, declared once so
+     * it's queryable via GET_RESOURCE_INFO the same as any other resource
+     * -- "the allocator owns the entire physical memory resource," made
+     * literal. Owned by node 0 (the BSP), since mem_mgr itself only ever
+     * runs there. Its handle is purely informational, not a dependency for
+     * allocate/release -- those are guarded by ALLOCATOR_MUTEX_ID, not by
+     * this resource's own reserved_by.
+     *
+     * The window is asked for, not restated: it is computed at init from
+     * what this machine actually has (see mem_mgr.c), so there is no
+     * constant here to agree with. mem_mgr's own init runs before this. */
+    uint64_t pool_base = 0, pool_size = 0;
+    memory_manager_window(&pool_base, &pool_size);
     g_pool_resource = create_resource_object(0, RESOURCE_KIND_MEMORY,
-                                             ALLOC_MIN, ALLOC_MAX - ALLOC_MIN,
+                                             pool_base, pool_size,
                                              RESOURCE_SYNC_TRANSFER, 0);
     kprintf("[coreinit]   cluster_scheduler: pool resource 0x%X declared, "
             "0x%X-0x%X\n",
-            (unsigned)g_pool_resource.handle, (unsigned)ALLOC_MIN,
-            (unsigned)ALLOC_MAX);
+            (unsigned)g_pool_resource.handle, (unsigned)pool_base,
+            (unsigned)(pool_base + pool_size));
 }
 
 static void release_job_resource(capability_t job, uint64_t bound_resource_id)

@@ -1,6 +1,7 @@
 #include "pagefault.h"
 #include "irq.h"
 #include "serial.h"
+#include "arch_cpu.h"
 
 #define MAX_STREAMED_PAGES 16
 #define MAX_COW_PAGES 16
@@ -250,9 +251,7 @@ __attribute__((interrupt)) static void isr_page_fault(struct interrupt_frame *fr
             "(present=%d write=%d) -- halting\n",
             (unsigned)fault_addr, (unsigned)error_code, was_present,
             was_write);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    arch_halt_forever();
 }
 
 void pagefault_init(uint64_t pml4_phys)

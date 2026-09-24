@@ -15,6 +15,15 @@
  * APIC ID). */
 static int g_core_tag = -1;
 
+static serial_reserve_fn g_reserve;
+static serial_release_fn g_release;
+
+void serial_set_guard(serial_reserve_fn reserve, serial_release_fn release)
+{
+    g_reserve = reserve;
+    g_release = release;
+}
+
 void serial_set_core_tag(int core_id)
 {
     g_core_tag = core_id;
@@ -134,8 +143,17 @@ void kvprintf(const char *fmt, va_list ap)
 
 void kprintf(const char *fmt, ...)
 {
+    /* The whole call is the unit of exclusion, not each character: a line
+     * emitted a byte at a time through a polled UART is exactly what two
+     * cores shred each other's output in the middle of. */
+    if (g_reserve && !g_reserve()) {
+        return; /* another core is mid-line; skip rather than interleave */
+    }
     va_list ap;
     va_start(ap, fmt);
     kvprintf(fmt, ap);
     va_end(ap);
+    if (g_release) {
+        g_release();
+    }
 }

@@ -1,15 +1,21 @@
 #include "mem_mgr.h"
+#include <ownership.h>
 #include "capnp_build.h"
 #include "schema.h"
 #include "serial.h"
+#include "arch_cpu.h"
 #include "try_lock.h"
 #include "../include/smp_layout.h"
+#include "macho.h"
 
 #define MAX_CLAIMS 64
 
-/* The allocatable window for alloc/free (method 1/2) -- see
- * smp_layout.h's ALLOC_MIN/ALLOC_MAX for the shared definition
- * cluster_scheduler.c's pool resource also uses. */
+/* The allocatable window for alloc/free (method 1/2), computed once in
+ * memory_manager_init_schema from what this machine actually has, rather
+ * than declared as a pair of constants. Nothing else may restate it --
+ * cluster_scheduler.c asks via memory_manager_window(). */
+static uint64_t g_alloc_lo;
+static uint64_t g_alloc_hi;
 
 typedef struct {
     uint64_t base;
@@ -32,10 +38,11 @@ static trylock_t g_lock;
  * on instead -- this runs as a plain synchronous kernel_invoke
  * handler, same reasoning as cluster_scheduler.c's own
  * storage_lock_acquire_wait. */
+static void mem_lock_acquire_wait(void) lock_acquires_for_caller;
 static void mem_lock_acquire_wait(void)
 {
     while (!trylock_try_acquire(&g_lock)) {
-        __asm__ volatile("hlt");
+        arch_idle();
     }
 }
 
@@ -61,6 +68,7 @@ object_schema_t g_memory_manager_schema;
  * check, one insertion path, no duplicated logic between "claims made
  * through the capability interface" and "claims this object already
  * knows about before anyone asks." Caller must hold g_lock. */
+fallible
 static int claim_locked(uint64_t base, uint64_t size, uint64_t kind)
 {
     uint64_t end = base + size;
@@ -85,6 +93,7 @@ static int claim_locked(uint64_t base, uint64_t size, uint64_t kind)
 }
 
 /* Caller must hold g_lock. */
+fallible
 static int alloc_locked(uint64_t size, uint64_t kind, uint64_t *out_base)
 {
     /* mmap, not brk: any free gap is a valid placement, not just space
@@ -96,7 +105,7 @@ static int alloc_locked(uint64_t size, uint64_t kind, uint64_t *out_base)
      * this implies is cheap and, more importantly, easy to trust. */
     uint64_t candidates[MAX_CLAIMS + 1];
     size_t n = 0;
-    candidates[n++] = ALLOC_MIN;
+    candidates[n++] = g_alloc_lo;
     for (size_t i = 0; i < g_claim_count; i++) {
         if (g_claims[i].used) {
             candidates[n++] = g_claims[i].base + g_claims[i].size;
@@ -115,9 +124,10 @@ static int alloc_locked(uint64_t size, uint64_t kind, uint64_t *out_base)
     }
 
     for (size_t i = 0; i < n; i++) {
-        uint64_t start = candidates[i] < ALLOC_MIN ? ALLOC_MIN : candidates[i];
+        uint64_t start =
+            candidates[i] < g_alloc_lo ? g_alloc_lo : candidates[i];
         uint64_t end = start + size;
-        if (end > ALLOC_MAX || end < start) {
+        if (end > g_alloc_hi || end < start) {
             continue; /* past the window, or overflowed */
         }
         int overlaps = 0;
@@ -140,6 +150,7 @@ static int alloc_locked(uint64_t size, uint64_t kind, uint64_t *out_base)
 }
 
 /* Caller must hold g_lock. */
+fallible
 static int free_locked(uint64_t base)
 {
     for (size_t i = 0; i < g_claim_count; i++) {
@@ -151,7 +162,39 @@ static int free_locked(uint64_t base)
     return 0;
 }
 
-void memory_manager_init_schema(void)
+/* A pre-claim that says so when it fails. claim_locked returns 0 for two
+ * reasons that both matter here -- the span overlaps something already
+ * claimed, or the claim table is full -- and every caller below used to
+ * discard that, so either one passed silently and left the span
+ * unprotected from the allocator.
+ *
+ * Newly worth catching rather than merely tidy: these spans used to be
+ * fixed constants that could be checked by reading the header, and are now
+ * measured at runtime (the kernel's and coreinit's own images) with init
+ * placed wherever the firmware reported free memory. An overlap is
+ * something this boot can discover, not something the layout rules out in
+ * advance. Caller must hold g_lock. */
+static void claim_or_warn(uint64_t base, uint64_t size, uint64_t kind,
+                          const char *what)
+{
+    if (!claim_locked(base, size, kind)) {
+        kprintf("[coreinit]   memory_manager: WARNING: could not reserve %s "
+                "at 0x%X-0x%X -- overlaps an existing claim, or the claim "
+                "table is full. That span is NOT protected this boot.\n",
+                what, (unsigned)base, (unsigned)(base + size));
+    }
+}
+
+void memory_manager_window(uint64_t *out_base, uint64_t *out_size)
+{
+    *out_base = g_alloc_lo;
+    *out_size = g_alloc_hi > g_alloc_lo ? g_alloc_hi - g_alloc_lo : 0;
+}
+
+void memory_manager_init_schema(uint64_t kernel_image_base,
+                                uint64_t kernel_image_len,
+                                uint64_t free_base, uint64_t free_size,
+                                uint64_t self_image_base)
 {
     trylock_init(&g_lock);
     g_claim_count = 0;
@@ -174,30 +217,99 @@ void memory_manager_init_schema(void)
      * round numbers rather than exact image sizes -- this is bookkeeping
      * to catch collisions, not a tight-fit allocator. */
     mem_lock_acquire_wait();
-    claim_locked(0xFEE00000, 0x1000, MEM_KIND_MMIO);        /* local APIC */
-    claim_locked(0xFEC00000, 0x1000, MEM_KIND_MMIO);        /* IOAPIC */
-    /* Sized generously (4MB, matching BSP_INIT_LOAD_BASE's own
-     * reservation below) rather than tightly: this kernel's own image
-     * now carries coreinit's entire Mach-O embedded within it (see
-     * boot.S's .incbin), not just its own compiled code, so its real
-     * footprint is well past what a bare kernel binary alone would
-     * need -- this is bookkeeping to catch collisions, not a tight
-     * fit, so erring generous costs nothing but address space. */
-    claim_locked(KERNEL_LOAD_BASE, 0x400000, MEM_KIND_KERNEL_RESERVED); /* BSP kernel image */
-    claim_locked(0x8000, 0x1000, MEM_KIND_KERNEL_RESERVED); /* AP trampoline page */
-    claim_locked(BSP_INIT_LOAD_BASE, 0x400000, MEM_KIND_KERNEL_RESERVED); /* BSP
-                 * coreinit's own loaded image -- see smp_layout.h's own
-                 * note on why this is claimed explicitly now: a future
-                 * dynamic allocation landing here would silently
-                 * corrupt coreinit's own running code, the same class
-                 * of bug BSP_INIT_LOAD_BASE itself was introduced
-                 * to fix. 4MB is coreinit's documented headroom, not
-                 * its current size -- claiming the whole margin now
-                 * means growth doesn't need a matching claim update. */
+    claim_or_warn(0xFEE00000, 0x1000, MEM_KIND_MMIO, "the local APIC");
+    claim_or_warn(0xFEC00000, 0x1000, MEM_KIND_MMIO, "the IOAPIC");
+    /* The kernel's REAL extent, measured by the kernel itself and handed
+     * over in boot_info -- not a round number, and not an address this
+     * file names. Rounded up to a page because a reservation covering
+     * part of a page is a reservation that doesn't cover that page.
+     * This replaces a generous 4MB guess whose justification (that the
+     * kernel image carries coreinit embedded within it, via boot.S's
+     * .incbin) stops being true the moment init is loaded as a
+     * bootloader module instead -- another reason not to restate a size
+     * that something else already knows. */
+    if (kernel_image_len != 0) {
+        uint64_t span = (kernel_image_len + 0xFFFull) & ~0xFFFull;
+        claim_or_warn(kernel_image_base, span, MEM_KIND_KERNEL_RESERVED,
+                      "the kernel image");
+    } else {
+        kprintf("[coreinit]   memory_manager: WARNING: kernel image extent "
+                "unknown, its span is NOT reserved this boot\n");
+    }
+    claim_or_warn(0x8000, 0x1000, MEM_KIND_KERNEL_RESERVED,
+                  "the AP trampoline page");
+    /* coreinit's own loaded image, measured rather than declared. A
+     * dynamic allocation landing here would silently corrupt the very
+     * code doing the allocating, which is why this is claimed explicitly
+     * at all. It used to be a constant address and a round 4 MiB of
+     * "documented headroom"; both are now read off the image itself, so
+     * growth needs no matching edit and cannot drift out of step. Page-
+     * rounded, because a reservation covering part of a page does not
+     * cover that page. */
+    /* Where the kernel placed us, as reported -- NOT ld64's
+     * _mh_execute_header, which compiles to a GOT-indirect load that
+     * nothing rebases in a freestanding image, and so still reads the
+     * link-time address once init is relocated. See init_abi.h. */
+    uint64_t self_base = self_image_base;
+    uint64_t self_len = self_base
+        ? macho_image_size((const void *)(uintptr_t)self_base) : 0;
+    if (self_len != 0) {
+        claim_or_warn(self_base, (self_len + 0xFFFull) & ~0xFFFull,
+                      MEM_KIND_KERNEL_RESERVED, "coreinit's own image");
+    } else {
+        /* Prints the address but does not read it: reaching here means it
+         * is not a Mach-O header, and it may not be readable at all. */
+        kprintf("[coreinit]   memory_manager: WARNING: no Mach-O header at "
+                "the load base the kernel reported (0x%X), so coreinit's own "
+                "span is NOT reserved this boot\n",
+                (unsigned)self_base);
+    }
+
+    /* The allocatable window, derived instead of declared. It used to be
+     * ALLOC_MIN/ALLOC_MAX -- 28 MiB and 64 MiB -- where 28 MiB existed only
+     * to leave coreinit "4 MiB of headroom to grow into". Measuring the
+     * image makes that margin unnecessary: growth moves this bound by
+     * itself, and the 3+ MiB the margin was costing comes back.
+     *
+     * Bottom: just past our own image. Everything else the BSP places by
+     * fixed address (its mailbox, discovery record, and page tables, all
+     * around 18 MiB) sits below that, as does the kernel.
+     *
+     * Top: still CORE_REGION_BASE, because each AP's region is placed by
+     * formula from it -- the one genuinely hardcoded bound left here, and
+     * an architectural question rather than a constant to derive (see
+     * TODO.md). Clamped down to the end of discovered free memory, so a
+     * machine smaller than the formula assumes yields a smaller window
+     * rather than addresses that are not backed by RAM at all. */
+    uint64_t lo = self_len != 0
+        ? ((self_base + self_len + 0xFFFull) & ~0xFFFull)
+        : free_base;
+    uint64_t hi = CORE_REGION_BASE;
+    if (free_size != 0) {
+        if (free_base > lo) {
+            lo = free_base;
+        }
+        uint64_t free_end = free_base + free_size;
+        if (free_end < hi) {
+            hi = free_end;
+        }
+    }
+    if (lo == 0 || hi <= lo) {
+        g_alloc_lo = 0;
+        g_alloc_hi = 0;
+        kprintf("[coreinit]   memory_manager: WARNING: no usable allocatable "
+                "window (lo 0x%X, hi 0x%X) -- every alloc will be refused\n",
+                (unsigned)lo, (unsigned)hi);
+    } else {
+        g_alloc_lo = lo;
+        g_alloc_hi = hi;
+    }
     trylock_release(&g_lock);
 
-    kprintf("[coreinit]   memory_manager: %u known region(s) pre-claimed\n",
-            (unsigned)g_claim_count);
+    kprintf("[coreinit]   memory_manager: %u known region(s) pre-claimed, "
+            "allocatable window 0x%X-0x%X (%u MiB)\n",
+            (unsigned)g_claim_count, (unsigned)g_alloc_lo, (unsigned)g_alloc_hi,
+            (unsigned)((g_alloc_hi - g_alloc_lo) / (1024 * 1024)));
 }
 
 void memory_manager_handler(void *data, uint32_t method_id, const void *msg,

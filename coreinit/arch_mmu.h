@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 /* Whether THIS core has a functioning MMU (paging hardware) at all --
  * not every node in a cluster is guaranteed one (a simple accelerator
  * or microcontroller core joining the cluster might have none), and
@@ -20,3 +22,19 @@
  * or the absence of one) without needing to know how it was
  * determined. */
 int arch_has_mmu(void);
+
+/* Build a fresh set of page tables for a core that is about to be started,
+ * in storage that core's own region provides, and return the physical
+ * address of the PML4 to load into CR3.
+ *
+ * This lived in the kernel until recently, which meant the kernel chose a
+ * core's address-space layout -- page size, which regions to map, where the
+ * tables themselves sat. That is memory management, and memory management
+ * is init's in this design; the kernel now simply loads the PML4 it is
+ * handed (see init_abi.h's struct ap_boot_request).
+ *
+ * `region_base` is the core's own region; the tables are placed within it
+ * at this project's own CORE_PGTABLE_OFFSET. Returns 0 if this
+ * architecture has no paging hardware to build tables for, in which case
+ * arch_has_mmu() is also 0 and nothing should be trying to. */
+uint64_t arch_build_page_tables(uint64_t region_base);
