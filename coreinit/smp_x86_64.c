@@ -213,6 +213,11 @@ void smp_bring_up_all(const acpi_info_t *acpi, uint8_t bsp_apic_id,
                  cluster_scheduler.handle);
         write_u64(region_base + CORE_DISCOVERY_OFFSET + CORE_DISCOVERY_SERIAL_RESOURCE_OFF,
                  serial_resource.handle);
+        /* APs cannot discover the RSDP themselves on an EFI-only boot path
+         * (no legacy-BIOS scan available), so the BSP writes the same
+         * early_rsdp_phys it used into each AP's discovery record. */
+        write_u64(region_base + CORE_DISCOVERY_OFFSET + CORE_DISCOVERY_RSDP_OFF,
+                 info->early_rsdp_phys);
 
         write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_PML4_OFF, info->pml4_phys);
         write_u64(AP_TRAMPOLINE_ADDR + AP_PARAM_GDT64_PTR_OFF,

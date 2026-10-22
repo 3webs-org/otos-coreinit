@@ -97,6 +97,17 @@
  *   +0x30  serial_resource_handle (the one shared "serial" peripheral
  *          resource object, declared once by the BSP -- see
  *          job_kprintf's own note for why this exists)
+ *   +0x38  early_rsdp_phys (the ACPI RSDP physical address the BSP
+ *          discovered; see init_abi.h's own boot_info field of that name)
+ *
+ * That last field is here for the same reason lapic_calibration_count is:
+ * it is a fact the BSP discovered and an AP cannot discover for itself.
+ * The BSP finds the RSDP through the EFI configuration table, which only
+ * exists in ITS OWN boot_args; an AP arrives with no boot_args at all. On
+ * an EFI-only boot there is nothing for an AP to scan either -- boot.S's
+ * own comment records that i386-pc/BIOS is out of scope for this kernel.
+ * Without this field an AP simply has no RSDP, so its timer never comes
+ * up and it cannot participate in scheduling.
  */
 #define CORE_DISCOVERY_BSP_INVOKE_OFF 0x00ull
 #define CORE_DISCOVERY_MUTEX_MGR_OFF 0x08ull
@@ -105,6 +116,7 @@
 #define CORE_DISCOVERY_LAPIC_CALIBRATION_OFF 0x20ull
 #define CORE_DISCOVERY_CLUSTER_SCHED_OFF 0x28ull
 #define CORE_DISCOVERY_SERIAL_RESOURCE_OFF 0x30ull
+#define CORE_DISCOVERY_RSDP_OFF 0x38ull
 
 #define KERNEL_LOAD_BASE 0x1000000ull /* build.sh's -pagezero_size
                                       * 0x1000000 -- where this kernel's

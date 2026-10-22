@@ -160,7 +160,12 @@ int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys)
     const rsdp_t *rsdp = early_rsdp_phys ? validate_rsdp((uintptr_t)early_rsdp_phys)
                                          : find_rsdp();
     if (!rsdp) {
-        kprintf("[coreinit]   acpi: RSDP not found\n");
+        if (early_rsdp_phys == 0) {
+            kprintf("[coreinit]   acpi: no RSDP in discovery record (BSP had none)\n");
+        } else {
+            kprintf("[coreinit]   acpi: RSDP at 0x%llX failed validation\n",
+                   (unsigned long long)early_rsdp_phys);
+        }
         return 0;
     }
     kprintf("[coreinit]   acpi: RSDP found, revision %u\n", rsdp->revision);
