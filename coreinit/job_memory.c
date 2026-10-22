@@ -87,6 +87,14 @@ int job_memory_acquire_resource(uint64_t resource_id, job_memory_slice_t *out)
         return 0;
     }
 
+    /* No fault mechanics on this node -- the slice behaves as plain
+     * memory: the region is already shared and directly addressable, so
+     * the acquire succeeds but there is nothing to split or mark. See
+     * pagefault.h's pagefault_supported(). */
+    if (!pagefault_supported()) {
+        return 1;
+    }
+
     pagefault_init(g_my_pml4_phys);
 
     uint64_t region_start = descriptor & ~0x1FFFFFull;

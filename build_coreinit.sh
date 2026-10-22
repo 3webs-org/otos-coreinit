@@ -70,19 +70,27 @@ case "$ARCH" in
         "
         ASM_SOURCES="coreinit/ap_trampoline_x86_64.S coreinit/job_exec_switch_x86_64.S"
         LD_ARCH=x86_64
+        # The AP trampoline object is deliberately NOT listed here: ld64
+        # cannot link its 16-bit real-mode relocations, and smp_x86_64.c
+        # consumes the pre-generated flat binary in
+        # ap_trampoline_blob.h instead -- it is compiled, never linked.
         ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_x86_64.o"
         ;;
     aarch64)
         TARGET=aarch64-apple-darwin
         CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
         
-        # aarch64 source files (INCOMPLETE: missing SMP, MMU, boot asm)
+        # aarch64 source files (complete at the link level; ARM boot path
+        # is future work)
         SOURCES="
             coreinit/coreinit.c
             coreinit/serial_aarch64.c
             coreinit/topology_aarch64.c
+            coreinit/pci_aarch64.c
+            coreinit/ata_aarch64.c
             coreinit/irq_aarch64.c
             coreinit/timer_aarch64.c
+            coreinit/pagefault_aarch64.c
             lib/fdt.c
             coreinit/mutex_mgr.c
             coreinit/mem_mgr.c
@@ -99,13 +107,18 @@ case "$ARCH" in
         "
         ASM_SOURCES="coreinit/job_exec_switch_aarch64.S"
         LD_ARCH=arm64
-        ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_aarch64.o"
-        
-        # Fail early with a clear message: aarch64 backend is incomplete
-        echo "ERROR: ARCH=aarch64 is incomplete. Missing implementations:" >&2
-        # ap_trampoline_aarch64.S deliberately absent: PSCI CPU_ON replaces the trampoline
-        # (the AP entry contract is documented in smp_aarch64.c).
-        exit 1
+        # The FDT object belongs here rather than on the shared link
+        # line: lib/fdt.c is only in this arch's SOURCES, so the object
+        # doesn't exist for an x86_64 build. No trampoline object either
+        # -- PSCI CPU_ON replaces it (the AP entry contract is
+        # documented in smp_aarch64.c).
+        ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_aarch64.o $BUILD/lib_fdt.o"
+
+        # The aarch64 build is complete at the link level. The ARM BOOT
+        # path is separate future work (G4c): it needs the saski S4 DTB
+        # handoff and an ARM kernel_boot_ap, not a build gap --
+        # ARCH=aarch64 produces a valid, unbootable-by-design image until
+        # that lands.
         ;;
     *)
         echo "ERROR: Unknown ARCH='$ARCH'. Supported: x86_64, aarch64" >&2
@@ -123,7 +136,7 @@ for src in $SOURCES; do
         arch_mmu_x86_64|arch_mmu_aarch64)
             obj="$BUILD/coreinit_arch_mmu.o"
             ;;
-        pagefault_x86_64)
+        pagefault_x86_64|pagefault_aarch64)
             obj="$BUILD/coreinit_pagefault.o"
             ;;
         arch_cpu_x86_64|arch_cpu_aarch64)
@@ -141,17 +154,20 @@ for src in $SOURCES; do
             smp_x86_64|smp_aarch64)
             obj="$BUILD/coreinit_smp.o"
             ;;
-        lapic_timer_x86_64)
+        lapic_timer_x86_64|timer_aarch64)
             obj="$BUILD/coreinit_lapic_timer.o"
             ;;
-        pci_x86_64)
+        pci_x86_64|pci_aarch64)
             obj="$BUILD/coreinit_pci.o"
             ;;
-        ata_x86_64)
+        ata_x86_64|ata_aarch64)
             obj="$BUILD/coreinit_ata.o"
             ;;
         acpi_x86_64)
-            obj="$BUILD/coreinit_acpi.o"
+            # x86's topology backend IS the ACPI one: it emits the same
+            # coreinit_topology.o aarch64 gets from topology_aarch64.c,
+            # so the shared link line stays arch-neutral.
+            obj="$BUILD/coreinit_topology.o"
             ;;
         coreinit)
             obj="$BUILD/coreinit_main.o"
@@ -205,7 +221,7 @@ done
     -e _coreinit_main -pagezero_size 0x1800000 \
     -o "$BUILD/coreinit.macho" \
     "$BUILD/coreinit_main.o" "$BUILD/coreinit_serial.o" "$BUILD/coreinit_pci.o" \
-    "$BUILD/coreinit_ata.o" "$BUILD/coreinit_irq.o" "$BUILD/coreinit_acpi.o" \
+    "$BUILD/coreinit_ata.o" "$BUILD/coreinit_irq.o" "$BUILD/coreinit_topology.o" \
     "$BUILD/coreinit_smp.o" \
     "$BUILD/coreinit_mutex_mgr.o" "$BUILD/coreinit_mem_mgr.o" \
     "$BUILD/coreinit_lapic_timer.o" "$BUILD/coreinit_scheduler.o" \

@@ -70,3 +70,10 @@ int ata_read_sector(uint32_t lba, void *buf512)
 
     return 1;
 }
+
+/* The legacy ATA I/O ports are always present on the platforms this
+ * backend targets. */
+int ata_present(void)
+{
+    return 1;
+}

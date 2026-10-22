@@ -12,12 +12,11 @@
  * itself. Every object created here is deliberately unguarded; nothing
  * about that is an oversight to fix later in *this* file.
  *
- * This file is compiled as a Mach-O binary (clang -target
- * x86_64-apple-darwin), not ELF.
+ * This file is compiled as a Mach-O binary, not ELF, targeting
+ * <arch>-apple-darwin for whichever ARCH build_coreinit.sh selected; it
+ * includes no architecture-specific header.
  */
 
-#include "arch_x86_64.h"
-#include "acpi_x86_64.h"
 #include "topology.h"
 #include "ata.h"
 #include "cap.h"
@@ -42,8 +41,8 @@
 #include "../include/smp_layout.h"
 
 /* NOTE on mode64_token: see kernel/arch_x86_64.h's own comment for why
- * the kernel's copy of these primitives is gated and coreinit's copy
- * (this file's own arch_x86_64.h) is not. */
+ * the kernel's copy of those primitives is gated. This file includes no
+ * architecture-specific header at all -- nothing in it needs one. */
 
 static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
                               const void *msg, size_t len, void *response,
@@ -541,19 +540,20 @@ typedef struct {
 } smp_job_ctx_t;
 
 typedef struct {
-    uint32_t lapic_base;
+    uint64_t timer_hint; /* arch-opaque timer init hint -- x86_64: the
+                          * LAPIC MMIO base; aarch64: the generic-timer
+                          * frequency. See topology_timer_hint. */
     int is_bsp;
-    uint64_t discovered_lapic_calibration; /* only meaningful if !is_bsp --
-                                            * see lapic_timer.h for why
-                                            * only the BSP can measure
-                                            * this itself */
+    uint64_t discovered_calibration; /* only meaningful if !is_bsp --
+                                      * see timer.h for why only the BSP
+                                      * can measure this itself */
 } timer_job_ctx_t;
 
 /* Set by job_timer_bringup on the BSP path, read by job_smp_bringup
  * (which always runs after it -- priority 90 < 100, see coreinit_main)
  * so the value can be published to every AP through the discovery
  * record without needing its own separate plumbing. */
-static uint32_t g_lapic_calibration = 0;
+static uint32_t g_timer_calibration = 0;
 
 /* Set by cross_core_signal_test_handler (an ISR-context callback --
  * kept to a single flag write, no kprintf from inside the handler
@@ -587,8 +587,8 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
         irq_core_init(g_kernel_invoke);
         /* timer_core_init calibrates (x86) or initializes (aarch64) and
          * returns the calibration value for the SMP job to publish. */
-        g_lapic_calibration = (uint32_t)timer_core_init(c->lapic_base, 0,
-                                                        g_kernel_invoke);
+        g_timer_calibration =
+            (uint32_t)timer_core_init(c->timer_hint, 0, g_kernel_invoke);
         hw_mutex_unlock();
     } else {
         job_kprintf(self_job_id,
@@ -596,9 +596,9 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                    "entirely, using the BSP's own published calibration "
                    "instead\n");
         irq_core_init(g_kernel_invoke);
-        timer_core_init(c->lapic_base,
-                       (uint32_t)c->discovered_lapic_calibration,
-                       g_kernel_invoke);
+        timer_core_init(c->timer_hint,
+                        (uint32_t)c->discovered_calibration,
+                        g_kernel_invoke);
     }
 
     /* The IDT is now genuinely loaded and stable on this core (both
@@ -674,7 +674,7 @@ static job_result_t job_smp_bringup(void *ctx, uint64_t self_job_id,
 
     if (c->is_bsp) {
         smp_bring_up_all(c->topo, c->info, c->memory_manager,
-                        c->mutex_manager, c->hw_mutex_id, g_lapic_calibration,
+                        c->mutex_manager, c->hw_mutex_id, g_timer_calibration,
                         c->cluster_scheduler, c->serial_resource);
     } else {
         kprintf("[coreinit] not the BSP -- further bring-up stays the "
@@ -690,6 +690,11 @@ static job_result_t job_pci_scan(void *ctx, uint64_t self_job_id,
     (void)ctx;
     (void)self_job_id;
     (void)out_block_id;
+    if (!pci_present()) {
+        kprintf("[coreinit] === job: PCI scan ===\n");
+        kprintf("[coreinit]   PCI not present on this platform -- skipping\n");
+        return JOB_FINISHED;
+    }
     kprintf("\n[coreinit] === job: PCI scan ===\n");
     pci_scan(print_pci_device, NULL);
     return JOB_FINISHED;
@@ -701,6 +706,11 @@ static job_result_t job_disk_demo(void *ctx, uint64_t self_job_id,
     (void)ctx;
     (void)self_job_id;
     (void)out_block_id;
+    if (!ata_present()) {
+        kprintf("[coreinit] === job: minting the disk object ===\n");
+        kprintf("[coreinit]   ATA not present on this platform -- skipping\n");
+        return JOB_FINISHED;
+    }
     kprintf("\n[coreinit] === job: minting the disk object (real "
             "ATA-backed) ===\n");
     capability_t disk = create_object(disk_handler, NULL, &g_disk_schema);
@@ -720,8 +730,9 @@ static job_result_t job_disk_demo(void *ctx, uint64_t self_job_id,
 
 /* Delivered via the cluster scheduler's mailbox mechanism, not
  * submitted locally like the jobs above -- proof the cross-core path
- * genuinely works: ctx here is the SENDING core's apic_id, a plain
- * integer needing no cross-core pointer validity at all. */
+ * genuinely works: ctx here is the SENDING core's own node id (APIC ID
+ * on x86_64, MPIDR on aarch64), a plain integer needing no cross-core
+ * pointer validity at all. */
 static job_result_t job_greet_from_bsp(void *ctx, uint64_t self_job_id,
                                        uint64_t *out_block_id)
 {
@@ -729,7 +740,7 @@ static job_result_t job_greet_from_bsp(void *ctx, uint64_t self_job_id,
     (void)out_block_id;
     uint64_t sender_apic_id = (uint64_t)(uintptr_t)ctx;
     kprintf("\n[coreinit] === job: greeting received via the cluster "
-            "scheduler's cross-node dispatch, sent by apic_id %u -- "
+            "scheduler's cross-node dispatch, sent by node id %u -- "
             "cross-node job delivery works ===\n",
             (unsigned)sender_apic_id);
     return JOB_FINISHED;
@@ -808,6 +819,12 @@ static job_result_t job_pagefault_demo(void *ctx, uint64_t self_job_id,
     (void)out_block_id;
     pagefault_demo_ctx_t *c = (pagefault_demo_ctx_t *)ctx;
 
+    if (!pagefault_supported()) {
+        kprintf("[coreinit]   page-fault demo skipping: this platform has "
+                "no page-fault mechanics (see arch_mmu.h)\n");
+        return JOB_FINISHED;
+    }
+
     kprintf("[coreinit] pagefault/COW demo starting\n");
     pagefault_init(c->pml4_phys);
 
@@ -863,6 +880,11 @@ static job_result_t job_stream_setup(void *ctx, uint64_t self_job_id,
                                      uint64_t *out_block_id)
 {
     (void)ctx;
+    if (!pagefault_supported()) {
+        kprintf("[coreinit]   STREAM/COW setup skipping: this platform has "
+                "no page-fault mechanics (see arch_mmu.h)\n");
+        return JOB_FINISHED;
+    }
     kprintf("\n[coreinit] === job: cross-node STREAM/COW setup (BSP) "
             "===\n");
 
@@ -912,6 +934,12 @@ static job_result_t job_stream_cow_verify(void *ctx, uint64_t self_job_id,
     (void)self_job_id;
     (void)out_block_id;
     stream_demo_ctx_t *c = (stream_demo_ctx_t *)ctx;
+
+    if (!pagefault_supported()) {
+        kprintf("[coreinit]   STREAM/COW verify skipping: this platform has "
+                "no page-fault mechanics (see arch_mmu.h)\n");
+        return JOB_FINISHED;
+    }
 
     kprintf("\n[coreinit] === job: cross-node STREAM/COW verify (node "
             "1) ===\n");
@@ -1167,7 +1195,9 @@ void coreinit_main(struct init_boot_info *info)
      * "which invoke function" special-casing needed here at all. */
     scheduler_client_init(g_kernel_invoke, cluster_scheduler, (uint8_t)my_apic_id);
 
-    uint64_t reg_words[4] = {my_apic_id, CLUSTER_ARCH_X86_64, my_region_base,
+    /* The architecture code this node joins as -- resolved per-arch, like
+     * everything else in topology. */
+    uint64_t reg_words[4] = {my_apic_id, topology_cluster_arch(), my_region_base,
                              cross_core_signal_my_target()};
     uint8_t reg_req[48];
     size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 4);
@@ -1182,12 +1212,14 @@ void coreinit_main(struct init_boot_info *info)
      * has one (see arch_mmu.h) -- absence is the normal, expected case
      * on some future non-x86_64 node, not an error here. */
     uint64_t my_cpu_core = scheduler_declare_resource(
-        RESOURCE_KIND_CPU_CORE, CLUSTER_ARCH_X86_64, 0, RESOURCE_SYNC_TRANSFER);
+        RESOURCE_KIND_CPU_CORE, topology_cluster_arch(), 0,
+        RESOURCE_SYNC_TRANSFER);
     kprintf("[coreinit] declared this node's own cpu_core resource, id %u\n",
            (unsigned)my_cpu_core);
     if (arch_has_mmu()) {
         uint64_t my_mmu = scheduler_declare_resource(
-            RESOURCE_KIND_MMU, CLUSTER_ARCH_X86_64, 0, RESOURCE_SYNC_TRANSFER);
+            RESOURCE_KIND_MMU, topology_cluster_arch(), 0,
+            RESOURCE_SYNC_TRANSFER);
         kprintf("[coreinit] declared this node's own mmu resource, id %u\n",
                (unsigned)my_mmu);
     }
@@ -1224,9 +1256,12 @@ void coreinit_main(struct init_boot_info *info)
 
     if (have_topo) {
         static timer_job_ctx_t timer_ctx;
-        timer_ctx.lapic_base = (uint32_t)topo.arch_opaque[0];
+        /* The hint is arch-opaque (x86_64: LAPIC base; aarch64:
+         * generic-timer frequency) -- topology_timer_hint returns the
+         * right slot for whichever arch this build is. */
+        timer_ctx.timer_hint = topology_timer_hint(&topo);
         timer_ctx.is_bsp = is_bsp;
-        timer_ctx.discovered_lapic_calibration = info->lapic_calibration_count;
+        timer_ctx.discovered_calibration = info->lapic_calibration_count;
         scheduler_submit(JOB_TYPE_TIMER_BRINGUP, &timer_ctx, 100, 0, RESOURCE_KIND_NONE, 0);
 
         static smp_job_ctx_t smp_ctx;

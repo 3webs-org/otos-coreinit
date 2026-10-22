@@ -1,5 +1,6 @@
 #include "acpi_x86_64.h"
 #include "topology.h"
+#include "cluster_scheduler.h"
 #include "serial.h"
 #include "mmio.h"
 #include <stdint.h>
@@ -252,4 +253,15 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
     out->arch_opaque[3] = 0;
 
     return 1;
+}
+
+uint64_t topology_timer_hint(const topology_t *t)
+{
+    /* Slot [0] is the LAPIC MMIO base on this architecture. */
+    return t->arch_opaque[0];
+}
+
+uint64_t topology_cluster_arch(void)
+{
+    return CLUSTER_ARCH_X86_64;
 }

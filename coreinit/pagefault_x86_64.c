@@ -255,6 +255,13 @@ __attribute__((interrupt)) static void isr_page_fault(struct interrupt_frame *fr
     }
 }
 
+/* This backend installs the real #PF gate and resolves faults, so the
+ * mechanics genuinely exist on the platforms it targets. */
+int pagefault_supported(void)
+{
+    return 1;
+}
+
 void pagefault_init(uint64_t pml4_phys)
 {
     g_pagefault_pml4_phys = pml4_phys;

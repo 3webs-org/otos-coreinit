@@ -116,6 +116,7 @@
  *   no response. */
 
 #define CLUSTER_ARCH_X86_64 0
+#define CLUSTER_ARCH_AARCH64 1
 #define NODE_AFFINITY_ANY 0xFFFFFFFFFFFFFFFFull
 
 #define RESOURCE_KIND_NONE 0xFFFFFFFFFFFFFFFFull /* "no kind requirement" sentinel */

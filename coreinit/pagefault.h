@@ -35,6 +35,13 @@
  * frame, THEN map it present) -- but that fetch step doesn't exist yet,
  * because no non-shared-memory transport exists yet either. */
 
+/* Whether THIS node has page-fault mechanics at all. Fault-driven
+ * STREAM/COW needs an MMU AND an implementation of this seam; a node
+ * without the implementation reports 0 and every caller gates on it.
+ * See arch_mmu.h, which anticipates exactly this for nodes without an
+ * MMU. */
+int pagefault_supported(void);
+
 #define PAGE_PRESENT 0x1ull
 #define PAGE_WRITABLE 0x2ull
 #define PAGE_HUGE 0x80ull

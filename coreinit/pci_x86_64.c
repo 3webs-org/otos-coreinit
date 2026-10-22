@@ -66,3 +66,10 @@ void pci_scan(pci_found_fn on_found, void *user_data)
         }
     }
 }
+
+/* The PCI configuration mechanism is always present on the platforms
+ * this backend targets. */
+int pci_present(void)
+{
+    return 1;
+}

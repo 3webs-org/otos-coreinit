@@ -78,3 +78,13 @@ int topology_discover(topology_t *out, uint64_t arch_hint);
  *
  * Implemented in acpi_x86_64.c on x86_64, psci_aarch64.c on aarch64. */
 uint64_t topology_self_id(void);
+
+/* The arch-opaque timer init hint this topology discovered -- x86_64:
+ * the LAPIC MMIO base; aarch64: the generic-timer frequency. Each arch's
+ * topology backend returns the right arch_opaque[] slot, so the caller
+ * never has to know which slot means what. */
+uint64_t topology_timer_hint(const topology_t *t);
+
+/* The CLUSTER_ARCH_* value (see cluster_scheduler.h) this node joins the
+ * cluster scheduler as. */
+uint64_t topology_cluster_arch(void);

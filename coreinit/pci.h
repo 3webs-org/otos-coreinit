@@ -24,3 +24,7 @@ typedef void (*pci_found_fn)(const pci_device_info_t *dev, void *user_data);
  * any bridge it finds. Tracked as a known simplification, not silently
  * assumed to be the whole story. */
 void pci_scan(pci_found_fn on_found, void *user_data);
+
+/* Whether this platform has a discoverable PCI bus at all. A platform
+ * without one skips the PCI jobs rather than linking dead code paths. */
+int pci_present(void);

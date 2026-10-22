@@ -1,4 +1,5 @@
 #include "topology.h"
+#include "cluster_scheduler.h"
 #include "serial.h"
 #include "../include/fdt.h"
 #include <stdint.h>
@@ -209,4 +210,16 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
 uint64_t topology_aarch64_uart_base(const topology_t *t)
 {
     return t->arch_opaque[0];
+}
+
+uint64_t topology_timer_hint(const topology_t *t)
+{
+    /* Slot [2] is the generic-timer frequency on this architecture --
+     * timer_core_init takes a frequency here, a LAPIC base on x86_64. */
+    return t->arch_opaque[2];
+}
+
+uint64_t topology_cluster_arch(void)
+{
+    return CLUSTER_ARCH_AARCH64;
 }

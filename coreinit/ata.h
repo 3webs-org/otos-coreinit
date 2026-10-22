@@ -13,3 +13,7 @@
  * or timeout).
  */
 int ata_read_sector(uint32_t lba, void *buf512);
+
+/* Whether this platform has a discoverable ATA bus at all. A platform
+ * without one skips the disk jobs rather than linking dead code paths. */
+int ata_present(void);
