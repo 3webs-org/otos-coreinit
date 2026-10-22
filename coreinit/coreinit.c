@@ -17,7 +17,8 @@
  */
 
 #include "arch_x86_64.h"
-#include "acpi.h"
+#include "acpi_x86_64.h"
+#include "topology.h"
 #include "ata.h"
 #include "cap.h"
 #include "capnp_build.h"
@@ -528,8 +529,7 @@ static void hw_mutex_unlock(void)
  * API supports it for jobs that would benefit (see scheduler.h). ---- */
 
 typedef struct {
-    const acpi_info_t *acpi;
-    uint8_t bsp_apic_id;
+    const topology_t *topo;
     const struct init_boot_info *info;
     capability_t memory_manager;
     capability_t mutex_manager;
@@ -540,7 +540,7 @@ typedef struct {
 } smp_job_ctx_t;
 
 typedef struct {
-    const acpi_info_t *acpi;
+    uint32_t lapic_base;
     int is_bsp;
     uint64_t discovered_lapic_calibration; /* only meaningful if !is_bsp --
                                             * see lapic_timer.h for why
@@ -584,10 +584,10 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
          * all. */
         hw_mutex_lock();
         irq_core_init(g_kernel_invoke);
-        uint32_t count = lapic_timer_calibrate(c->acpi->local_apic_address);
+        uint32_t count = lapic_timer_calibrate(c->lapic_base);
         hw_mutex_unlock();
 
-        lapic_timer_start(c->acpi->local_apic_address, count, g_kernel_invoke);
+        lapic_timer_start(c->lapic_base, count, g_kernel_invoke);
         g_lapic_calibration = count;
     } else {
         job_kprintf(self_job_id,
@@ -595,7 +595,7 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                    "entirely, using the BSP's own published calibration "
                    "instead\n");
         irq_core_init(g_kernel_invoke);
-        lapic_timer_start(c->acpi->local_apic_address,
+        lapic_timer_start(c->lapic_base,
                           (uint32_t)c->discovered_lapic_calibration,
                           g_kernel_invoke);
     }
@@ -655,15 +655,15 @@ static job_result_t job_smp_bringup(void *ctx, uint64_t self_job_id,
     smp_job_ctx_t *c = (smp_job_ctx_t *)ctx;
 
     kprintf("\n[coreinit] === job: bringing up additional cores ===\n");
-    kprintf("[coreinit] found %u MADT processor entries:\n",
-            (unsigned)c->acpi->cpu_count);
+    kprintf("[coreinit] found %u topology entries:\n",
+            (unsigned)c->topo->count);
     unsigned usable = 0;
-    for (size_t i = 0; i < c->acpi->cpu_count; i++) {
-        kprintf("[coreinit]   apic_id=%u %s\n",
-                (unsigned)c->acpi->cpus[i].apic_id,
-                c->acpi->cpus[i].enabled ? "enabled" : "disabled (present "
-                                                       "for hotplug only)");
-        if (c->acpi->cpus[i].enabled) {
+    for (size_t i = 0; i < c->topo->count; i++) {
+        kprintf("[coreinit]   target=%llu %s\n",
+                (unsigned long long)c->topo->cores[i].target,
+                c->topo->cores[i].enabled ? "enabled" : "disabled (present "
+                                                        "for hotplug only)");
+        if (c->topo->cores[i].enabled) {
             usable++;
         }
     }
@@ -671,7 +671,7 @@ static job_result_t job_smp_bringup(void *ctx, uint64_t self_job_id,
             usable);
 
     if (c->is_bsp) {
-        smp_bring_up_all(c->acpi, c->bsp_apic_id, c->info, c->memory_manager,
+        smp_bring_up_all(c->topo, c->info, c->memory_manager,
                         c->mutex_manager, c->hw_mutex_id, g_lapic_calibration,
                         c->cluster_scheduler, c->serial_resource);
     } else {
@@ -992,15 +992,14 @@ void coreinit_main(struct init_boot_info *info)
     g_factory = info->caps.factory;
     proxy_init(g_kernel_invoke, g_factory);
 
-    /* Read this core's own APIC ID directly from the LAPIC's standard,
-     * fixed physical address (0xFEE00000 on every x86 system, ACPI
-     * discovery or not) as the very first thing, so EVERY line of
-     * output from here on is correctly tagged -- without this, the
-     * shared-services setup below (which happens before ACPI discovery
-     * would otherwise give us this) prints untagged, and on a shared,
-     * unlocked UART that reads as attributed to whichever OTHER core
-     * happened to interleave a tagged line at the same moment. */
-    uint8_t my_apic_id = smp_read_bsp_apic_id(0xFEE00000);
+    /* Read this core's own ID directly from hardware (LAPIC ID register
+     * on x86_64, MPIDR_EL1 on aarch64) as the very first thing, so EVERY
+     * line of output from here on is correctly tagged -- without this,
+     * the shared-services setup below (which happens before topology
+     * discovery would otherwise give us this) prints untagged, and on a
+     * shared, unlocked UART that reads as attributed to whichever OTHER
+     * core happened to interleave a tagged line at the same moment. */
+    uint64_t my_apic_id = topology_self_id();
     serial_set_core_tag((int)my_apic_id);
 
     init_plain_schema();
@@ -1136,22 +1135,18 @@ void coreinit_main(struct init_boot_info *info)
         run_job_exec_priority_test();
     }
 
-    /* ACPI discovery happens once, here, since both job_timer_bringup
-     * (needs the local APIC's MMIO base) and job_smp_bringup (needs the
-     * full core list) depend on it -- acpi and bsp_apic_id both outlive
-     * this function (it never returns) as ordinary local variables,
-     * same as everything else coreinit_main sets up before handing off.
-     * bsp_apic_id itself was already read, early, above -- reused here
-     * rather than re-read, "bsp_apic_id" just means "this core's own
-     * APIC ID", the name predates this also running on APs. */
-    static acpi_info_t acpi;
-    uint8_t bsp_apic_id = my_apic_id;
-    int have_acpi = acpi_discover(&acpi, info->early_rsdp_phys);
-    if (have_acpi) {
-        kprintf("[coreinit] this core's own APIC ID: %u\n",
-                (unsigned)bsp_apic_id);
+    /* Topology discovery happens once, here, since both job_timer_bringup
+     * (needs the local APIC's MMIO base on x86_64) and job_smp_bringup
+     * (needs the full core list) depend on it -- topo outlives this
+     * function (it never returns) as an ordinary local variable, same as
+     * everything else coreinit_main sets up before handing off. */
+    static topology_t topo;
+    int have_topo = topology_discover(&topo, info->early_rsdp_phys);
+    if (have_topo) {
+        kprintf("[coreinit] this core's own ID: %llu\n",
+                (unsigned long long)topology_self_id());
     } else {
-        kprintf("[coreinit] ACPI discovery failed -- no timer bring-up or "
+        kprintf("[coreinit] topology discovery failed -- no timer bring-up or "
                 "further cores possible this boot\n");
     }
 
@@ -1168,9 +1163,9 @@ void coreinit_main(struct init_boot_info *info)
     /* Always the LOCAL kernel_invoke now -- cluster_scheduler is either
      * genuinely local (BSP) or a local proxy (AP), so there's no more
      * "which invoke function" special-casing needed here at all. */
-    scheduler_client_init(g_kernel_invoke, cluster_scheduler, bsp_apic_id);
+    scheduler_client_init(g_kernel_invoke, cluster_scheduler, (uint8_t)my_apic_id);
 
-    uint64_t reg_words[4] = {bsp_apic_id, CLUSTER_ARCH_X86_64, my_region_base,
+    uint64_t reg_words[4] = {my_apic_id, CLUSTER_ARCH_X86_64, my_region_base,
                              cross_core_signal_my_target()};
     uint8_t reg_req[48];
     size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 4);
@@ -1225,16 +1220,15 @@ void coreinit_main(struct init_boot_info *info)
     kprintf("\n[coreinit] === submitting jobs, then handing off to the "
             "scheduler ===\n");
 
-    if (have_acpi) {
+    if (have_topo) {
         static timer_job_ctx_t timer_ctx;
-        timer_ctx.acpi = &acpi;
+        timer_ctx.lapic_base = (uint32_t)topo.arch_opaque[0];
         timer_ctx.is_bsp = is_bsp;
         timer_ctx.discovered_lapic_calibration = info->lapic_calibration_count;
         scheduler_submit(JOB_TYPE_TIMER_BRINGUP, &timer_ctx, 100, 0, RESOURCE_KIND_NONE, 0);
 
         static smp_job_ctx_t smp_ctx;
-        smp_ctx.acpi = &acpi;
-        smp_ctx.bsp_apic_id = bsp_apic_id;
+        smp_ctx.topo = &topo;
         smp_ctx.info = info;
         smp_ctx.memory_manager = memory_manager;
         smp_ctx.mutex_manager = mutex_manager;

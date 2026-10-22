@@ -1,5 +1,7 @@
-#include "acpi.h"
+#include "acpi_x86_64.h"
+#include "topology.h"
 #include "serial.h"
+#include "mmio.h"
 #include <stdint.h>
 
 typedef struct {
@@ -151,8 +153,9 @@ static const sdt_header_t *find_table_xsdt(uint64_t xsdt_phys,
 
 #define MADT_TYPE_LOCAL_APIC 0
 #define MADT_LAPIC_FLAG_ENABLED 0x1u
+#define LAPIC_REG_ID 0x020
 
-int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys)
+static int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys)
 {
     out->cpu_count = 0;
     out->local_apic_address = 0;
@@ -205,6 +208,48 @@ int acpi_discover(acpi_info_t *out, uint64_t early_rsdp_phys)
         }
         p += len;
     }
+
+    return 1;
+}
+
+uint64_t topology_self_id(void)
+{
+    /* Read this core's own APIC ID directly from the local APIC's ID
+     * register at the standard, fixed physical address (0xFEE00000 on
+     * every x86 system) -- bits [31:24] of the register at offset 0x20.
+     * Callable before topology_discover, since serial tagging and early
+     * diagnostics need it immediately. */
+    uint32_t lapic_base = 0xFEE00000;
+    uint32_t reg = mmio_read32((const volatile void *)(uintptr_t)(lapic_base + LAPIC_REG_ID));
+    return (uint64_t)((reg >> 24) & 0xFF);
+}
+
+int topology_discover(topology_t *out, uint64_t arch_hint)
+{
+    /* x86_64 implementation: arch_hint is the ACPI RSDP physical address
+     * (from init_boot_info's early_rsdp_phys field). Wraps the existing
+     * acpi_discover logic, translating acpi_info_t into the arch-neutral
+     * topology_t format. */
+    acpi_info_t acpi;
+    int ok = acpi_discover(&acpi, arch_hint);
+    if (!ok) {
+        out->count = 0;
+        out->arch_opaque[0] = 0;
+        return 0;
+    }
+
+    out->count = acpi.cpu_count;
+    for (size_t i = 0; i < acpi.cpu_count && i < TOPOLOGY_MAX_CORES; i++) {
+        out->cores[i].target = (uint64_t)acpi.cpus[i].apic_id;
+        out->cores[i].enabled = acpi.cpus[i].enabled;
+    }
+
+    /* arch_opaque[0]: LAPIC MMIO base, needed by lapic_timer.c and
+     * smp_x86_64.c for INIT-SIPI-SIPI and timer calibration. */
+    out->arch_opaque[0] = (uint64_t)acpi.local_apic_address;
+    out->arch_opaque[1] = 0;
+    out->arch_opaque[2] = 0;
+    out->arch_opaque[3] = 0;
 
     return 1;
 }

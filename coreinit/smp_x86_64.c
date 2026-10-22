@@ -31,11 +31,7 @@ static const uint64_t g_ap_gdt64[3] = {
 };
 static gdt_ptr_t g_ap_gdt_ptr;
 
-uint8_t smp_read_bsp_apic_id(uint32_t lapic_base)
-{
-    uint32_t reg = mmio_read32((const volatile void *)(uintptr_t)(lapic_base + LAPIC_REG_ID));
-    return (uint8_t)((reg >> 24) & 0xFF);
-}
+
 
 static uint32_t lapic_read(uint32_t lapic_base, uint32_t reg)
 {
@@ -119,7 +115,7 @@ static int claim_region(uint64_t base, uint64_t size, uint64_t kind)
                                         RESOURCE_SYNC_TRANSFER, &resource_id);
 }
 
-void smp_bring_up_all(const acpi_info_t *acpi, uint8_t bsp_apic_id,
+void smp_bring_up_all(const topology_t *topo,
                       const struct init_boot_info *info,
                       capability_t memory_manager, capability_t mutex_manager,
                       uint64_t hardware_mutex_id, uint32_t lapic_calibration_count,
@@ -141,9 +137,13 @@ void smp_bring_up_all(const acpi_info_t *acpi, uint8_t bsp_apic_id,
         trampoline_dst[i] = ap_trampoline_blob[i];
     }
 
+    uint64_t my_apic_id = topology_self_id();
+    uint32_t lapic_base = (uint32_t)topo->arch_opaque[0];
+
     size_t region_index = 0;
-    for (size_t i = 0; i < acpi->cpu_count; i++) {
-        if (!acpi->cpus[i].enabled || acpi->cpus[i].apic_id == bsp_apic_id) {
+    for (size_t i = 0; i < topo->count; i++) {
+        uint8_t apic_id = (uint8_t)topo->cores[i].target;
+        if (!topo->cores[i].enabled || apic_id == my_apic_id) {
             continue;
         }
 
@@ -155,13 +155,13 @@ void smp_bring_up_all(const acpi_info_t *acpi, uint8_t bsp_apic_id,
                     "REJECTED (overlaps an existing claim) -- skipping "
                     "this core rather than silently using memory "
                     "something else already owns\n",
-                    (unsigned)region_base, (unsigned)acpi->cpus[i].apic_id);
+                    (unsigned)region_base, (unsigned)apic_id);
             continue;
         }
 
         kprintf("[coreinit]   smp: bringing up apic_id=%u at region 0x%X "
                 "(claimed)\n",
-                (unsigned)acpi->cpus[i].apic_id, (unsigned)region_base);
+                (unsigned)apic_id, (unsigned)region_base);
 
         /* A raw, byte-for-byte copy of this kernel's own currently-
          * loaded image, not a re-parsed/re-loaded one -- see
@@ -231,11 +231,10 @@ void smp_bring_up_all(const acpi_info_t *acpi, uint8_t bsp_apic_id,
          * submitted with THIS specific AP's apic_id as the affinity, so
          * only it (not the BSP, not any other AP) is eligible to run
          * it. */
-        scheduler_submit_to_node(acpi->cpus[i].apic_id, JOB_TYPE_GREET_FROM_BSP,
-                                 (uint64_t)bsp_apic_id, 95, 0,
+        scheduler_submit_to_node(topo->cores[i].target, JOB_TYPE_GREET_FROM_BSP,
+                                 my_apic_id, 95, 0,
                                  RESOURCE_KIND_NONE, 0);
 
-        send_init_sipi_sipi(acpi->local_apic_address,
-                            acpi->cpus[i].apic_id);
+        send_init_sipi_sipi(lapic_base, apic_id);
     }
 }
