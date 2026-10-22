@@ -6,6 +6,8 @@
 #
 # Compares include/ headers that are duplicated across both repos:
 #   - init_abi.h, smp_layout.h, ownership.h, memory_tokens.h, fdt.h
+#   - lib/fdt.c (a verbatim source copy, not a header, duplicated for the
+#     same reason and carrying the same silent-divergence risk)
 #
 # Also checks that contract headers coreinit consumes from saski exist:
 #   - kernel/cap.h, kernel/schema.h, kernel/capnp.h
@@ -72,6 +74,35 @@ for HEADER in cap.h schema.h capnp.h; do
         DRIFT_DETECTED=1
     else
         echo "kernel/$HEADER: OK"
+    fi
+done
+
+echo ""
+echo "Checking duplicated SOURCE files (not only headers)..."
+
+# lib/fdt.c is copied verbatim from saski, because libfdt gets compiled into
+# whichever image needs it. A copy is still a copy: if saski fixes a DTB
+# parsing bug, this repository silently keeps the old behaviour. It is covered
+# here for the same reason the headers are -- a duplicated artifact with no
+# equality assertion between the two repos is a divergence waiting to happen.
+for SRC in lib/fdt.c; do
+    COREINIT_FILE="$ROOT/$SRC"
+    SASKI_FILE="$SASKI_ROOT/$SRC"
+
+    if [ ! -f "$COREINIT_FILE" ]; then
+        echo "$SRC: not present here (skipped)"
+        continue
+    fi
+    if [ ! -f "$SASKI_FILE" ]; then
+        echo "$SRC: MISSING in saski"
+        DRIFT_DETECTED=1
+        continue
+    fi
+    if cmp -s "$COREINIT_FILE" "$SASKI_FILE"; then
+        echo "$SRC: SAME"
+    else
+        echo "$SRC: DIFFER"
+        DRIFT_DETECTED=1
     fi
 done
 
