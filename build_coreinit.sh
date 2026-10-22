@@ -85,18 +85,18 @@ case "$ARCH" in
               coreinit/job_exec.c
               coreinit/arch_cpu_aarch64.c
               coreinit/cross_core_signal_aarch64.c
+              coreinit/smp_aarch64.c
         "
         ASM_SOURCES=""
         LD_ARCH=arm64
         
         # Fail early with a clear message: aarch64 backend is incomplete
         echo "ERROR: ARCH=aarch64 is incomplete. Missing implementations:" >&2
-        echo "  - coreinit/smp_aarch64.c (PSCI)" >&2
+        # ap_trampoline_aarch64.S deliberately absent: PSCI CPU_ON replaces the trampoline
+        # (the AP entry contract is documented in smp_aarch64.c).
         echo "  - coreinit/arch_mmu_aarch64.c (ARMv8 page tables)" >&2
-
-        echo "  - coreinit/ap_trampoline_aarch64.S (secondary core boot)" >&2
         echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
-        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI), cross_core_signal_aarch64.c (GICv3 SGI)" >&2
+        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI), cross_core_signal_aarch64.c (GICv3 SGI), smp_aarch64.c (PSCI CPU_ON)" >&2
         exit 1
         ;;
     *)
@@ -130,7 +130,7 @@ for src in $SOURCES; do
           irq_x86_64|irq_aarch64)
             obj="$BUILD/coreinit_irq.o"
             ;;
-            smp_x86_64)
+            smp_x86_64|smp_aarch64)
             obj="$BUILD/coreinit_smp.o"
             ;;
         lapic_timer_x86_64)

@@ -99,6 +99,13 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
     kprintf("[coreinit]   topology: DTB valid at 0x%llX\n",
            (unsigned long long)arch_hint);
 
+    /* Recorded verbatim (the arch_hint as received) so later backends can
+     * keep reading the tree without anyone threading the DTB pointer
+     * through their signatures -- smp_aarch64.c needs /psci out of this
+     * same blob, and smp_bring_up_all is handed the topology, not the
+     * blob. */
+    out->arch_opaque[3] = arch_hint;
+
     /* Find /cpus node */
     int cpus_offset = fdt_path_offset(blob, "/cpus");
     if (cpus_offset == FDT_ERR_NODE) {
@@ -146,7 +153,9 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
      *   [0] = PL011 UART base physical address
      *   [1] = GIC distributor base physical address
      *   [2] = ARM generic timer frequency (Hz), if declared in DT
-     *   [3] = unused/reserved */
+     *   [3] = DTB physical address (the arch_hint as received) -- kept so
+     *         an arch_opaque-only caller (smp_aarch64.c, which needs
+     *         /psci) can reach the tree it was built from */
 
     /* Find PL011 UART -- must be enabled (the DT has a second one marked
      * disabled, which is deliberate test data). */
