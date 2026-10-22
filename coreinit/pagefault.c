@@ -258,7 +258,7 @@ __attribute__((interrupt)) static void isr_page_fault(struct interrupt_frame *fr
 void pagefault_init(uint64_t pml4_phys)
 {
     g_pagefault_pml4_phys = pml4_phys;
-    irq_install_gate(PAGEFAULT_VECTOR, (void *)isr_page_fault);
+    irq_install_handler(PAGEFAULT_VECTOR, (void *)isr_page_fault);
 
     /* CR0.WP defaults to clear after reset, meaning supervisor-mode
      * code (all of this project, so far -- there is no ring 3 yet)

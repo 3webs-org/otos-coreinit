@@ -77,19 +77,19 @@ static inline void enable_interrupts(void)
  * Masks EVERYTHING (both PICs, 0xFF) -- found the hard way that
  * unmasking IRQ0/IRQ1 here was a real, genuinely intermittent bug:
  * coreinit.c's own early bring-up calls this, then immediately calls
- * irq_setup_idt_only (which wipes every IDT gate, including whatever
+ * irq_core_init (which wipes every IDT gate, including whatever
  * this function just enabled delivery for) before ever getting to
- * irq_init's own gate installation. In that window, an unmasked IRQ0
+ * that function's own gate installation. In that window, an unmasked IRQ0
  * -- and the PIT genuinely is still ticking, nothing stops it here --
  * firing into an empty gate is exactly a #GP with error code 0x102
  * (IDT-referenced, selector index 0x20), reproduced directly and
  * confirmed via GDB. Masking everything here means remapping the
  * vectors out of exception-collision range is the ONLY thing this
  * function promises -- actually wanting delivery is an explicit,
- * separate opt-in (see irq_init's own unmask, right after ITS gates
+ * separate opt-in (see irq_core_init's own unmask, right after ITS gates
  * are actually in place) rather than a side effect a caller might not
  * expect. */
-void pic_remap(void)
+static void pic_remap(void)
 {
     outb(0x20, 0x11); /* ICW1: begin init, ICW4 will follow */
     outb(0xA0, 0x11);
@@ -309,7 +309,7 @@ __attribute__((interrupt)) static void isr_irq1(struct interrupt_frame *frame)
     outb(0x20, 0x20);
 }
 
-void irq_setup_idt_only(void)
+static void irq_setup_idt_only(void)
 {
     for (int i = 0; i < IDT_ENTRIES; i++) {
         idt_set_gate(i, 0, 0, 0);
@@ -320,8 +320,8 @@ void irq_setup_idt_only(void)
             "this core doesn't need it, see lapic_timer)\n");
 }
 
-void irq_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
-                                      size_t, void *, size_t, size_t *))
+void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
+                                           size_t, void *, size_t, size_t *))
 {
     init_irq_manager_schema();
 
@@ -351,7 +351,7 @@ void irq_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
     outb(0x21, 0xFC); /* unmask IRQ0 (timer) and IRQ1 (keyboard) only */
 
     enable_interrupts();
-    kprintf("[coreinit] irq_init: IDT loaded, PIC remapped, PIT at 100Hz, "
+    kprintf("[coreinit] irq_core_init: IDT loaded, PIC remapped, PIT at 100Hz, "
             "interrupts enabled\n");
 }
 
@@ -402,7 +402,7 @@ uint64_t irq_get_tick_count(void)
     return g_tick_count;
 }
 
-void irq_mask_irq0(void)
+static void irq_mask_irq0(void)
 {
     uint8_t mask = inb(0x21);
     outb(0x21, mask | 0x01);
@@ -410,7 +410,7 @@ void irq_mask_irq0(void)
             "core's tick source\n");
 }
 
-void irq_install_gate(int vector, void *handler_addr)
+void irq_install_handler(int vector, void *handler_addr)
 {
     idt_set_gate(vector, handler_addr, KERNEL_CODE_SELECTOR, 0x8E);
 }

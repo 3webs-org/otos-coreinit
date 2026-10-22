@@ -1,4 +1,6 @@
 #include "lapic_timer.h"
+#include "arch_x86_64.h"
+#include "cap.h"
 #include "capnp_build.h"
 #include "irq.h"
 #include "mmio.h"
@@ -86,10 +88,14 @@ uint32_t lapic_timer_calibrate(uint32_t lapic_base)
             "(divide-by-16)\n",
             (unsigned)count_per_10ms);
 
-    irq_mask_irq0(); /* the PIT has done its one and only job, for the
-                      * one and only core that can ever do it -- see
-                      * lapic_timer.h's own note on why an AP could never
-                      * reach this function usefully */
+    /* The PIT has done its one and only job, for the one and only core
+     * that can ever do it -- see lapic_timer.h's own note on why an AP
+     * could never reach this function usefully. Mask IRQ0 at the PIC so
+     * it stops generating interrupts. */
+    uint8_t mask = inb(0x21);
+    outb(0x21, mask | 0x01);
+    kprintf("[coreinit]   irq0 masked at the PIC -- PIT is no longer this "
+            "core's tick source\n");
     return count_per_10ms;
 }
 
@@ -102,7 +108,7 @@ void lapic_timer_start(
     g_kernel_invoke = kernel_invoke_fn;
     g_timer_target.handle = 0;
 
-    irq_install_gate(LAPIC_TIMER_VECTOR, (void *)isr_lapic_timer);
+    irq_install_handler(LAPIC_TIMER_VECTOR, (void *)isr_lapic_timer);
 
     /* Software-enable the Local APIC itself -- distinct from, and in
      * addition to, EFLAGS.IF (the "sti" below). This bit gates ALL
@@ -122,9 +128,8 @@ void lapic_timer_start(
     lapic_write(LAPIC_REG_INITIAL_COUNT, count_per_10ms);
     lapic_write(LAPIC_REG_LVT_TIMER, LAPIC_TIMER_VECTOR | LVT_MODE_PERIODIC);
 
-    /* Idempotent if irq_init already did this (the BSP's path) --
-     * necessary if it didn't (an AP, which only ever calls
-     * irq_setup_idt_only, never irq_init, and so never otherwise enables
+    /* Idempotent if irq_core_init already did this (the BSP's path) --
+     * necessary if it didn't (an AP, which would otherwise never enable
      * interrupts at all). */
     __asm__ volatile("sti");
 
@@ -161,10 +166,10 @@ void lapic_timer_eoi(void)
 
 void lapic_timer_install_isr(void *isr)
 {
-    irq_install_gate(LAPIC_TIMER_VECTOR, isr);
+    irq_install_handler(LAPIC_TIMER_VECTOR, isr);
 }
 
 void lapic_timer_restore_normal_isr(void)
 {
-    irq_install_gate(LAPIC_TIMER_VECTOR, (void *)isr_lapic_timer);
+    irq_install_handler(LAPIC_TIMER_VECTOR, (void *)isr_lapic_timer);
 }

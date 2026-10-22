@@ -41,10 +41,9 @@
 #define PAGE_ADDR_MASK 0x000FFFFFFFFFF000ull
 
 /* Installs the #PF (vector 14) handler into this core's own IDT. Must
- * be called after irq_setup_idt_only or irq_init (either one loads a
- * valid IDT this can add a gate to) -- same "write to the array
- * irq_install_gate already exposed" pattern as the LAPIC timer's own
- * vector. */
+ * be called after irq_core_init (which loads a valid IDT this can add a
+ * gate to) -- same "write to the array irq_install_handler already
+ * exposed" pattern as the LAPIC timer's own vector. */
 void pagefault_init(uint64_t pml4_phys);
 
 /* Splits the 2MB huge-page region containing `region_base` (must

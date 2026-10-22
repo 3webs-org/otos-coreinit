@@ -4,15 +4,16 @@
 
 /* Calibrates and starts THIS core's own Local APIC timer, using the
  * already-running legacy PIT tick purely as a one-time time reference
- * (masking IRQ0 afterward -- see irq_mask_irq0). This is what actually
- * fixes "every core dogpiling on IRQ0": there is no shared hardware
- * here at all after calibration completes. Each core that calls this
- * does its own brief, mutex-protected read of the PIT's tick count (the
- * PIT itself is still shared, legacy, non-SMP-safe hardware -- only the
- * ONE-TIME calibration touches it, not the ongoing tick), then owns its
- * own independent timer from that point on. Must be called after
- * irq_init (needs the IDT and the legacy PIT tick already running) and
- * while still holding the hardware mutex used to guard PIC/PIT access.
+ * (masking IRQ0 afterward). This is what actually fixes "every core
+ * dogpiling on IRQ0": there is no shared hardware here at all after
+ * calibration completes. Each core that calls this does its own brief,
+ * mutex-protected read of the PIT's tick count (the PIT itself is still
+ * shared, legacy, non-SMP-safe hardware -- only the ONE-TIME
+ * calibration touches it, not the ongoing tick), then owns its own
+ * independent timer from that point on. Must be called after
+ * irq_core_init (needs the IDT and the legacy PIT tick already running)
+ * and while still holding the hardware mutex used to guard PIC/PIT
+ * access.
  */
 void lapic_timer_calibrate_and_start(
     uint32_t lapic_base,

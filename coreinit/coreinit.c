@@ -481,7 +481,7 @@ static void tick_counter_handler(void *data, uint32_t method_id,
 }
 
 /* ---- The hardware mutex: guards genuinely shared, non-SMP-safe legacy
- * hardware (the PIC, the PIT) that every core's own irq_init() would
+ * hardware (the PIC, the PIT) that every core's own irq_core_init() would
  * otherwise reconfigure independently with zero arbitration. Reaching
  * it is either an ordinary local invoke (BSP, which hosts it directly)
  * or a call through the BSP's OWN kernel_invoke at its own address
@@ -583,7 +583,7 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
          * per-core LAPIC state needing no cross-core coordination at
          * all. */
         hw_mutex_lock();
-        irq_init(g_kernel_invoke);
+        irq_core_init(g_kernel_invoke);
         uint32_t count = lapic_timer_calibrate(c->acpi->local_apic_address);
         hw_mutex_unlock();
 
@@ -594,7 +594,7 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                    "[coreinit]   not the BSP -- skipping the legacy PIC/PIT "
                    "entirely, using the BSP's own published calibration "
                    "instead\n");
-        irq_setup_idt_only();
+        irq_core_init(g_kernel_invoke);
         lapic_timer_start(c->acpi->local_apic_address,
                           (uint32_t)c->discovered_lapic_calibration,
                           g_kernel_invoke);
@@ -603,9 +603,9 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
     /* The IDT is now genuinely loaded and stable on this core (both
      * branches above are done clearing/installing gates) -- safe to
      * add our own vector on top without it being wiped by a later
-     * irq_init/irq_setup_idt_only call. See cross_core_signal.h: this
-     * is the receive side every node needs before anyone else in the
-     * cluster can reach it for a preemption signal. */
+     * irq_core_init call. See cross_core_signal.h: this is the receive
+     * side every node needs before anyone else in the cluster can reach
+     * it for a preemption signal. */
     cross_core_signal_install_handler(cross_core_signal_test_handler);
 
     job_kprintf(self_job_id,
@@ -1127,11 +1127,11 @@ void coreinit_main(struct init_boot_info *info)
     if (is_bsp) {
         /* Before ANY code can possibly enable interrupts (which
          * run_job_exec_test's very first job_exec_switch does, via a
-         * fake frame with IF=1) -- see pic_remap's own note on why
-         * this specific ordering matters. irq_init (called later, via
-         * job_timer_bringup) redoes both of these, harmlessly. */
-        pic_remap();
-        irq_setup_idt_only();
+         * fake frame with IF=1) -- the PIC must be remapped first so
+         * IRQ0 doesn't collide with vector 8 (double fault). This is
+         * done inside irq_core_init (called later, via
+         * job_timer_bringup), but we need the IDT loaded NOW. */
+        irq_core_init(g_kernel_invoke);
         run_job_exec_test();
         run_job_exec_priority_test();
     }

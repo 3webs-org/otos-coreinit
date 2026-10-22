@@ -10,9 +10,9 @@
  * This exists specifically so multiple cores' coreinit instances can
  * safely coordinate around genuinely shared state -- the legacy
  * PIC/PIT being the concrete, motivating case: without this, every
- * core's irq_init() independently reconfigures the same physical
+ * core's irq_core_init() independently reconfigures the same physical
  * hardware with no arbitration at all, and whichever one runs last
- * silently wins. See irq_init's own use of the discovered hardware
+ * silently wins. See irq_core_init's own use of the discovered hardware
  * mutex for how this actually gets used, not just published. */
 extern object_schema_t g_mutex_manager_schema;
 void mutex_manager_handler(void *data, uint32_t method_id, const void *msg,

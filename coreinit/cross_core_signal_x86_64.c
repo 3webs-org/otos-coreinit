@@ -63,7 +63,7 @@ __attribute__((interrupt)) static void isr_cross_core_signal(
 void cross_core_signal_install_handler(void (*handler)(void))
 {
     g_handler = handler;
-    irq_install_gate(CROSS_CORE_SIGNAL_VECTOR, (void *)isr_cross_core_signal);
+    irq_install_handler(CROSS_CORE_SIGNAL_VECTOR, (void *)isr_cross_core_signal);
 }
 
 uint64_t cross_core_signal_my_target(void)
