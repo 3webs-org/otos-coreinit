@@ -34,6 +34,12 @@ if [ ! -d "$SASKI_ROOT/kernel" ]; then
 fi
 
 # Architecture-specific configuration
+#
+# ARCH_EXTRA_OBJS: job_exec_init is implemented once per architecture
+# (job_exec_x86_64.c / job_exec_aarch64.c), so exactly ONE of those
+# objects may appear on the link line -- both at once would be a
+# duplicate symbol. Each arch block below sets it.
+ARCH_EXTRA_OBJS=""
 case "$ARCH" in
     x86_64)
         TARGET=x86_64-apple-darwin
@@ -57,12 +63,14 @@ case "$ARCH" in
             coreinit/pagefault_x86_64.c
             coreinit/job_memory.c
             coreinit/job_exec.c
+            coreinit/job_exec_x86_64.c
             coreinit/cross_core_signal_x86_64.c
             coreinit/arch_mmu_x86_64.c
             coreinit/arch_cpu_x86_64.c
         "
         ASM_SOURCES="coreinit/ap_trampoline_x86_64.S coreinit/job_exec_switch_x86_64.S"
         LD_ARCH=x86_64
+        ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_x86_64.o"
         ;;
     aarch64)
         TARGET=aarch64-apple-darwin
@@ -83,20 +91,20 @@ case "$ARCH" in
             coreinit/proxy.c
               coreinit/job_memory.c
               coreinit/job_exec.c
+              coreinit/job_exec_aarch64.c
               coreinit/arch_cpu_aarch64.c
               coreinit/cross_core_signal_aarch64.c
               coreinit/smp_aarch64.c
               coreinit/arch_mmu_aarch64.c
         "
-        ASM_SOURCES=""
+        ASM_SOURCES="coreinit/job_exec_switch_aarch64.S"
         LD_ARCH=arm64
+        ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_aarch64.o"
         
         # Fail early with a clear message: aarch64 backend is incomplete
         echo "ERROR: ARCH=aarch64 is incomplete. Missing implementations:" >&2
         # ap_trampoline_aarch64.S deliberately absent: PSCI CPU_ON replaces the trampoline
         # (the AP entry contract is documented in smp_aarch64.c).
-        echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
-        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI), cross_core_signal_aarch64.c (GICv3 SGI), smp_aarch64.c (PSCI CPU_ON), arch_mmu_aarch64.c (SCTLR probe)" >&2
         exit 1
         ;;
     *)
@@ -165,7 +173,7 @@ for src in $ASM_SOURCES; do
           ap_trampoline_x86_64)
               obj="$BUILD/coreinit_ap_trampoline.o"
             ;;
-        job_exec_switch_x86_64)
+        job_exec_switch_x86_64|job_exec_switch_aarch64)
             obj="$BUILD/coreinit_job_exec_switch.o"
             ;;
         *)
@@ -205,7 +213,7 @@ done
     "$BUILD/coreinit_pagefault.o" "$BUILD/coreinit_job_memory.o" \
     "$BUILD/coreinit_job_exec.o" "$BUILD/coreinit_job_exec_switch.o" \
     "$BUILD/coreinit_cross_core_signal.o" "$BUILD/coreinit_arch_mmu.o" \
-    "$BUILD/coreinit_arch_cpu.o"
+    "$BUILD/coreinit_arch_cpu.o" $ARCH_EXTRA_OBJS
 
 echo "built $BUILD/coreinit.macho"
 file "$BUILD/coreinit.macho"

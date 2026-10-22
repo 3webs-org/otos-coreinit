@@ -3,44 +3,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The exact layout of a job's saved execution context, as it sits on
- * its own stack after a save (whether from a real interrupt, or
- * job_exec_init's own fake first frame) -- read starting at a
- * saved_rsp value, matching EXACTLY what job_exec_switch's save/
- * restore sequence pushes and pops, in this order. Getting this
- * struct's field order wrong relative to the actual push/pop sequence
- * is silent, catastrophic stack corruption -- there is no type system
- * connecting a raw assembly push/pop pair to this struct's field
- * order, only this comment and matching them by hand, carefully, on
- * both sides, forever. */
-typedef struct __attribute__((packed)) {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
-    /* The CPU's own interrupt frame -- pushed by hardware on a real
-     * interrupt (Phase 3), or laid out by hand here for a job's very
-     * first run. iretq in 64-bit mode always pops all five of these,
-     * unconditionally, even with no privilege-level change -- verified
-     * against the Intel SDM directly before relying on it, since a
-     * wrong assumption here means silent stack corruption on every
-     * single switch. */
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-} job_saved_context_t;
-
-/* Segment selectors from this project's own GDT (kernel/boot.S) --
- * duplicated here by necessity, same reasoning as init_abi.h's own
- * note on why its struct fields are duplicated rather than shared
- * (coreinit and the kernel are compiled and linked completely
- * independently). */
-#define JOB_EXEC_CODE_SELECTOR 0x08ull
-#define JOB_EXEC_DATA_SELECTOR 0x10ull
-
-/* RFLAGS with interrupts enabled (bit 9) and the always-set reserved
- * bit 1 -- what a freshly-created job should run with. */
-#define JOB_EXEC_INITIAL_RFLAGS 0x202ull
+/* The saved-context layout is ARCHITECTURE-SPECIFIC, so it lives in an
+ * arch header rather than here: x86_64 uses an iretq-compatible frame
+ * (job_exec_x86_64.h: job_saved_context_t plus its GDT selector and
+ * initial-RFLAGS constants), aarch64 uses x0-x30 plus sp plus the saved
+ * DAIF (job_exec_aarch64.h: job_saved_context_aarch64_t plus its
+ * initial-PSTATE constant). Each one is matched by hand, field order to
+ * store/load offsets, against its own switch assembly
+ * (job_exec_switch_x86_64.S, job_exec_switch_aarch64.S) -- there is no
+ * type system connecting either struct to the raw assembly beside the
+ * comment on each side. job_exec_init's declaration stays here because
+ * it is arch-neutral; its two implementations live in
+ * job_exec_x86_64.c / job_exec_aarch64.c, selected per-arch by the
+ * build (build_coreinit.sh), never by #ifdef. */
 
 /* Constructs a fake "already saved" context at the top of a fresh
  * stack, so the very first switch INTO this job looks, to the restore
@@ -103,7 +78,8 @@ typedef enum {
  * as distinct from cluster_scheduler.c's own job_data_t (that one is
  * the cross-node-visible identity and scheduling metadata; this one
  * only ever matters to the core actually running the job, same
- * reasoning as job_saved_context_t living here rather than there). */
+ * reasoning as job_saved_context_t living in job_exec_x86_64.h rather
+ * than there). */
 typedef struct {
     uint64_t saved_rsp;
     int priority;
