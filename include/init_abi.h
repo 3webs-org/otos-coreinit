@@ -145,6 +145,22 @@ struct init_boot_info {
                               * falls back to its own legacy-BIOS scan
                               * in that case -- see that function's own
                               * comment). */
+    uint64_t fdt_blob_phys; /* Flattened Device Tree physical address, as
+                             * delivered by the platform's own boot
+                             * convention. On aarch64 the standard arm64 boot
+                             * protocol passes it in x0 at kernel entry, and
+                             * the kernel's aarch64 boot path captures it
+                             * verbatim -- see include/fdt.h's own note on why
+                             * it must then be validated before it is trusted.
+                             * On x86_64 this stays 0: that platform's device
+                             * description is ACPI, which reaches init through
+                             * early_rsdp_phys above instead. The two fields
+                             * are deliberately separate rather than one
+                             * overloaded "arch hint": they carry different
+                             * formats read by different code, and a single
+                             * field would invite treating one as the other.
+                             * 0 means "not supplied", which is a normal value
+                             * on a platform with no device tree, not an error. */
     uint64_t ram_size; /* Total RAM, from GRUB's own real memory-map
                         * discovery -- see kernel/xnu_boot_args.h and
                         * boot.S's own _g_xnu_boot_args_addr for where
