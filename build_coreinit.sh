@@ -60,6 +60,7 @@ case "$ARCH" in
             coreinit/scheduler.c
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
+            coreinit/kinv.c
             coreinit/pagefault_x86_64.c
             coreinit/job_memory.c
             coreinit/job_exec.c
@@ -98,6 +99,7 @@ case "$ARCH" in
             coreinit/scheduler.c
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
+            coreinit/kinv.c
               coreinit/job_memory.c
               coreinit/job_exec.c
               coreinit/job_exec_aarch64.c
@@ -233,6 +235,7 @@ done
     "$BUILD/coreinit_mutex_mgr.o" "$BUILD/coreinit_mem_mgr.o" \
     "$BUILD/coreinit_lapic_timer.o" "$BUILD/coreinit_scheduler.o" \
     "$BUILD/coreinit_cluster_scheduler.o" "$BUILD/coreinit_proxy.o" \
+    "$BUILD/coreinit_kinv.o" \
     "$BUILD/coreinit_pagefault.o" "$BUILD/coreinit_job_memory.o" \
     "$BUILD/coreinit_job_exec.o" "$BUILD/coreinit_job_exec_switch.o" \
     "$BUILD/coreinit_cross_core_signal.o" "$BUILD/coreinit_arch_mmu.o" \
