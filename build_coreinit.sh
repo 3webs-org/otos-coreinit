@@ -84,6 +84,7 @@ case "$ARCH" in
               coreinit/job_memory.c
               coreinit/job_exec.c
               coreinit/arch_cpu_aarch64.c
+              coreinit/cross_core_signal_aarch64.c
         "
         ASM_SOURCES=""
         LD_ARCH=arm64
@@ -92,10 +93,10 @@ case "$ARCH" in
         echo "ERROR: ARCH=aarch64 is incomplete. Missing implementations:" >&2
         echo "  - coreinit/smp_aarch64.c (PSCI)" >&2
         echo "  - coreinit/arch_mmu_aarch64.c (ARMv8 page tables)" >&2
-        echo "  - coreinit/cross_core_signal_aarch64.c (SGI)" >&2
+
         echo "  - coreinit/ap_trampoline_aarch64.S (secondary core boot)" >&2
         echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
-        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI)" >&2
+        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI), cross_core_signal_aarch64.c (GICv3 SGI)" >&2
         exit 1
         ;;
     *)
@@ -108,7 +109,7 @@ esac
 for src in $SOURCES; do
     base=$(basename "$src" .c)
     case "$base" in
-        cross_core_signal_x86_64)
+        cross_core_signal_x86_64|cross_core_signal_aarch64)
             obj="$BUILD/coreinit_cross_core_signal.o"
             ;;
         arch_mmu_x86_64)
