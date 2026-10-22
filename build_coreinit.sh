@@ -86,6 +86,7 @@ case "$ARCH" in
               coreinit/arch_cpu_aarch64.c
               coreinit/cross_core_signal_aarch64.c
               coreinit/smp_aarch64.c
+              coreinit/arch_mmu_aarch64.c
         "
         ASM_SOURCES=""
         LD_ARCH=arm64
@@ -94,9 +95,8 @@ case "$ARCH" in
         echo "ERROR: ARCH=aarch64 is incomplete. Missing implementations:" >&2
         # ap_trampoline_aarch64.S deliberately absent: PSCI CPU_ON replaces the trampoline
         # (the AP entry contract is documented in smp_aarch64.c).
-        echo "  - coreinit/arch_mmu_aarch64.c (ARMv8 page tables)" >&2
         echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
-        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI), cross_core_signal_aarch64.c (GICv3 SGI), smp_aarch64.c (PSCI CPU_ON)" >&2
+        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI), cross_core_signal_aarch64.c (GICv3 SGI), smp_aarch64.c (PSCI CPU_ON), arch_mmu_aarch64.c (SCTLR probe)" >&2
         exit 1
         ;;
     *)
@@ -112,7 +112,7 @@ for src in $SOURCES; do
         cross_core_signal_x86_64|cross_core_signal_aarch64)
             obj="$BUILD/coreinit_cross_core_signal.o"
             ;;
-        arch_mmu_x86_64)
+        arch_mmu_x86_64|arch_mmu_aarch64)
             obj="$BUILD/coreinit_arch_mmu.o"
             ;;
         pagefault_x86_64)
