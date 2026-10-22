@@ -1,9 +1,22 @@
 #!/bin/sh
 set -e
 
+# ARCHITECTURE CONVENTION
+# -----------------------
+# Arch-specific implementation lives in <header-stem>_<arch>.c files
+# (e.g., arch_mmu_x86_64.c, cross_core_signal_x86_64.c). Headers stay
+# arch-neutral and define the seam (e.g., arch_mmu.h, cross_core_signal.h).
+#
+# Adding a new architecture means adding a file list below, not adding
+# #ifdef ladders inside shared files. The ARCH variable selects which
+# list to compile.
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD"
+
+# Architecture: x86_64 or aarch64
+ARCH=${ARCH:-x86_64}
 
 # Toolchain paths: overridable for macOS/Nix or other non-Debian environments
 LLVM_BIN=${LLVM_BIN:-/usr/lib/llvm-18/bin}
@@ -20,29 +33,70 @@ if [ ! -d "$SASKI_ROOT/kernel" ]; then
     exit 1
 fi
 
-TARGET=x86_64-apple-darwin
-CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -mno-red-zone -mno-sse -mno-mmx -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
+# Architecture-specific configuration
+case "$ARCH" in
+    x86_64)
+        TARGET=x86_64-apple-darwin
+        CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -mno-red-zone -mno-sse -mno-mmx -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
+        
+        # x86_64 source files
+        SOURCES="
+            coreinit/coreinit.c
+            coreinit/serial.c
+            coreinit/pci.c
+            coreinit/ata.c
+            coreinit/irq.c
+            coreinit/acpi.c
+            coreinit/smp.c
+            coreinit/mutex_mgr.c
+            coreinit/mem_mgr.c
+            coreinit/lapic_timer.c
+            coreinit/scheduler.c
+            coreinit/cluster_scheduler.c
+            coreinit/proxy.c
+            coreinit/pagefault.c
+            coreinit/job_memory.c
+            coreinit/job_exec.c
+            coreinit/cross_core_signal_x86_64.c
+            coreinit/arch_mmu_x86_64.c
+        "
+        ASM_SOURCES="coreinit/job_exec_switch.S"
+        LD_ARCH=x86_64
+        ;;
+    *)
+        echo "ERROR: Unknown ARCH='$ARCH'. Supported: x86_64" >&2
+        exit 1
+        ;;
+esac
 
-"$CC" $CFLAGS -c "$ROOT/coreinit/coreinit.c" -o "$BUILD/coreinit_main.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/serial.c" -o "$BUILD/coreinit_serial.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/pci.c" -o "$BUILD/coreinit_pci.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/ata.c" -o "$BUILD/coreinit_ata.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/irq.c" -o "$BUILD/coreinit_irq.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/acpi.c" -o "$BUILD/coreinit_acpi.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/smp.c" -o "$BUILD/coreinit_smp.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/mutex_mgr.c" -o "$BUILD/coreinit_mutex_mgr.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/mem_mgr.c" -o "$BUILD/coreinit_mem_mgr.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/lapic_timer.c" -o "$BUILD/coreinit_lapic_timer.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/scheduler.c" -o "$BUILD/coreinit_scheduler.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/cluster_scheduler.c" -o "$BUILD/coreinit_cluster_scheduler.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/proxy.c" -o "$BUILD/coreinit_proxy.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/pagefault.c" -o "$BUILD/coreinit_pagefault.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/job_memory.c" -o "$BUILD/coreinit_job_memory.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/job_exec.c" -o "$BUILD/coreinit_job_exec.o"
-"$CC" -target $TARGET -c "$ROOT/coreinit/job_exec_switch.S" -o "$BUILD/coreinit_job_exec_switch.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/cross_core_signal_x86_64.c" -o "$BUILD/coreinit_cross_core_signal.o"
-"$CC" $CFLAGS -c "$ROOT/coreinit/arch_mmu_x86_64.c" -o "$BUILD/coreinit_arch_mmu.o"
+# Compile C sources
+for src in $SOURCES; do
+    base=$(basename "$src" .c)
+    case "$base" in
+        cross_core_signal_x86_64)
+            obj="$BUILD/coreinit_cross_core_signal.o"
+            ;;
+        arch_mmu_x86_64)
+            obj="$BUILD/coreinit_arch_mmu.o"
+            ;;
+        coreinit)
+            obj="$BUILD/coreinit_main.o"
+            ;;
+        *)
+            obj="$BUILD/coreinit_${base}.o"
+            ;;
+    esac
+    "$CC" $CFLAGS -c "$ROOT/$src" -o "$obj"
+done
 
+# Compile assembly sources
+for src in $ASM_SOURCES; do
+    base=$(basename "$src" .S)
+    obj="$BUILD/coreinit_${base}.o"
+    "$CC" -target $TARGET -c "$ROOT/$src" -o "$obj"
+done
+
+# Link
 # -pagezero_size 0x1800000 (24 MiB, matching include/smp_layout.h's own
 # BSP_COREINIT_LOAD_BASE): coreinit declares its OWN preferred load
 # address here, via its own build, rather than the kernel deciding one
@@ -60,7 +114,7 @@ CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -mno-red-zo
 # own smp_bring_up_all, via the AP trampoline's region_base parameter)
 # -- externally supplied, not self-decided, which is exactly the
 # distinction this principle is about.
-"$LD64" -arch x86_64 -platform_version macos 10.12 10.12 \
+"$LD64" -arch "$LD_ARCH" -platform_version macos 10.12 10.12 \
     -e _coreinit_main -pagezero_size 0x1800000 \
     -o "$BUILD/coreinit.macho" \
     "$BUILD/coreinit_main.o" "$BUILD/coreinit_serial.o" "$BUILD/coreinit_pci.o" \
