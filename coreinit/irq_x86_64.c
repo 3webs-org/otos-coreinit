@@ -127,8 +127,6 @@ struct interrupt_frame {
 
 static uint64_t g_tick_count = 0;
 
-static void init_irq_manager_schema(void);
-
 /* --- #DF (double fault) diagnostics via IST ---
  *
  * Without this, ANY double fault is unrecoverable by construction: this
@@ -323,7 +321,6 @@ static void irq_setup_idt_only(void)
 void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
                                            size_t, void *, size_t, size_t *))
 {
-    init_irq_manager_schema();
 
     g_kernel_invoke = kernel_invoke_fn;
     for (int i = 0; i < 16; i++) {
@@ -355,19 +352,15 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
             "interrupts enabled\n");
 }
 
-static const struct_schema_t g_irq_bind_schema = {
-    .data_words = 2, .pointer_count = 0, .pointers = NULL};
-static method_schema_t g_irq_manager_methods[1];
-object_schema_t g_irq_manager_schema;
-
-static void init_irq_manager_schema(void)
-{
-    g_irq_manager_methods[0].method_id = 0;
-    g_irq_manager_methods[0].param_schema = &g_irq_bind_schema;
-    g_irq_manager_methods[0].result_schema = NULL;
-    g_irq_manager_schema.methods = g_irq_manager_methods;
-    g_irq_manager_schema.method_count = 1;
-}
+static const struct_schema_t irq_structs[] = {
+    {2, 0, SCHEMA_IDX_NONE}, /* {irq: u64, target: u64} */
+};
+static const method_schema_t irq_methods[] = {
+    {0, 0, SCHEMA_IDX_NONE},
+};
+static const object_schema_t irq_objects[] = {{0, 1}};
+const schema_table_t g_irq_manager_table = {
+    irq_structs, 1, NULL, 0, irq_methods, 1, irq_objects, 1};
 
 void irq_manager_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,

@@ -14,18 +14,12 @@
  * hardware with no arbitration at all, and whichever one runs last
  * silently wins. See irq_core_init's own use of the discovered hardware
  * mutex for how this actually gets used, not just published. */
-extern object_schema_t g_mutex_manager_schema;
+extern const schema_table_t g_mutex_manager_table;
+#define MUTEX_MGR_SCHEMA_MUTEX_MANAGER 0
 void mutex_manager_handler(void *data, uint32_t method_id, const void *msg,
                            size_t len, void *response, size_t response_cap,
                            size_t *out_response_len);
 
-/* Called once, by whichever core hosts this object (the BSP, in this
- * design), before its schema is used. */
+/* Resets the mutex table itself (the object's own state, not its
+ * schema -- the schema is const data needing no initialization). */
 void mutex_manager_init_schema(void);
-
-/* Populates JUST the schema with no other side effects -- what any node
- * needs before creating a LOCAL PROXY to a remote mutex_manager, since
- * kernel_invoke validates a request against the schema the LOCAL proxy
- * object was created with, not against whatever the real remote object
- * does. mutex_manager_init_schema calls this internally too. */
-void mutex_manager_build_schema(void);

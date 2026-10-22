@@ -36,11 +36,15 @@
  * Method 2 = free: {base: u64} -> {ok: u64}. Only releases a claim
  * previously made through alloc (or claim); ok=0 if base doesn't match
  * any current claim's own base exactly. */
-extern object_schema_t g_memory_manager_schema;
+extern const schema_table_t g_memory_manager_table;
+#define MEM_MGR_SCHEMA_MEMORY_MANAGER 0
 void memory_manager_handler(void *data, uint32_t method_id, const void *msg,
                             size_t len, void *response, size_t response_cap,
                             size_t *out_response_len);
 
+/* Resets the claim table and pre-claims the known-reserved regions --
+ * the object's own state, not its schema (the schema is const data
+ * needing no initialization). */
 void memory_manager_init_schema(void);
 
 #define MEM_KIND_MMIO 0

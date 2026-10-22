@@ -63,30 +63,27 @@ typedef struct {
 
 /* RESOURCE_METHOD_* constants now live in cluster_scheduler.h. */
 
-static const struct_schema_t res_s1 = {.data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t res_s6 = {.data_words = 6, .pointer_count = 0, .pointers = NULL};
-
-static method_schema_t g_resource_methods[4];
-object_schema_t g_resource_schema;
-
-void resource_object_build_schema(void)
-{
-    g_resource_methods[0].method_id = RESOURCE_METHOD_GET_INFO;
-    g_resource_methods[0].param_schema = &res_s1; /* dummy word, unused */
-    g_resource_methods[0].result_schema = &res_s6;
-    g_resource_methods[1].method_id = RESOURCE_METHOD_RESERVE;
-    g_resource_methods[1].param_schema = &res_s1; /* requesting_job */
-    g_resource_methods[1].result_schema = &res_s1; /* ok */
-    g_resource_methods[2].method_id = RESOURCE_METHOD_RELEASE_RESERVATION;
-    g_resource_methods[2].param_schema = &res_s1;
-    g_resource_methods[2].result_schema = &res_s1;
-    g_resource_methods[3].method_id = RESOURCE_METHOD_REASSIGN;
-    g_resource_methods[3].param_schema = &res_s1; /* new_owner_node */
-    g_resource_methods[3].result_schema = &res_s1;
-
-    g_resource_schema.methods = g_resource_methods;
-    g_resource_schema.method_count = 4;
-}
+/* Every schema this file provides is compile-time const data in the
+ * index-based form schema.h describes: references are uint16_t indices
+ * into a flat schema_table_t, integer initialisers need no relocation,
+ * and nothing is populated at runtime -- the same table bytes serve
+ * every kernel instance, which is what let the per-instance
+ * *_build_schema calls disappear. Struct entries are deduplicated by
+ * data-word count (index 0 = the 1-word shape, index 1 = 6 words).
+ * Object index constants live in cluster_scheduler.h. */
+static const struct_schema_t res_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE},
+    {6, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t res_methods[] = {
+    {RESOURCE_METHOD_GET_INFO, 0, 1},
+    {RESOURCE_METHOD_RESERVE, 0, 0}, /* requesting_job */
+    {RESOURCE_METHOD_RELEASE_RESERVATION, 0, 0},
+    {RESOURCE_METHOD_REASSIGN, 0, 0}, /* new_owner_node */
+};
+static const object_schema_t res_objects[] = {{0, 4}};
+const schema_table_t g_resource_table = {
+    res_structs, 2, NULL, 0, res_methods, 4, res_objects, 1};
 
 static void resource_handler(void *data, uint32_t method_id, const void *msg,
                              size_t len, void *response, size_t response_cap,
@@ -241,13 +238,14 @@ static capability_t create_resource_object(uint64_t owner_node, uint64_t kind,
     rd->reserved_by = initial_reserved_by;
     rd->sync_kind = sync_kind;
 
-    uint64_t create_words[4] = {(uint64_t)(uintptr_t)resource_handler,
+    uint64_t create_words[5] = {(uint64_t)(uintptr_t)resource_handler,
                                 (uint64_t)(uintptr_t)rd,
-                                (uint64_t)(uintptr_t)&g_resource_schema,
+                                (uint64_t)(uintptr_t)&g_resource_table,
+                                CS_SCHEMA_RESOURCE,
                                 (uint64_t)(uintptr_t)record_storage};
     uint8_t create_req[64];
     size_t create_req_len =
-        capnp_build_flat(create_req, sizeof(create_req), create_words, 4);
+        capnp_build_flat(create_req, sizeof(create_req), create_words, 5);
     uint8_t create_resp[24];
     size_t create_resp_len = 0;
     capability_t result = none;
@@ -421,70 +419,43 @@ static capability_t g_pool_resource; /* the one resource representing the
 #define METHOD_ALLOCATE_SLICE 11
 #define METHOD_RELEASE_SLICE 12
 
-static const struct_schema_t s3 = {.data_words = 3, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t s1 = {.data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t s4 = {.data_words = 4, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t s2 = {.data_words = 2, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t s5 = {.data_words = 5, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t s6 = {.data_words = 6, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t s7 = {.data_words = 7, .pointer_count = 0, .pointers = NULL};
-
-static method_schema_t g_methods[13];
-object_schema_t g_cluster_scheduler_schema;
-
-void cluster_scheduler_build_schema(void)
-{
-    g_methods[0].method_id = METHOD_JOIN_NODE;
-    g_methods[0].param_schema = &s4; /* node_id, arch, region_base,
-                                      * signal_target -- see node_data_t.
-                                      * Join is identity only; a node
-                                      * declares its own resources (cpu
-                                      * core, mmu if it has one, ...)
-                                      * afterward, the same
-                                      * declare_resource path everything
-                                      * else uses -- see coreinit.c's
-                                      * own post-join calls. */
-    g_methods[0].result_schema = NULL;
-    g_methods[1].method_id = METHOD_LEAVE_NODE;
-    g_methods[1].param_schema = &s1;
-    g_methods[1].result_schema = NULL;
-    g_methods[2].method_id = METHOD_REQUEST_ALLOCATION;
-    g_methods[2].param_schema = &s5;
-    g_methods[2].result_schema = &s2;
-    g_methods[3].method_id = METHOD_DECLARE_RESOURCE;
-    g_methods[3].param_schema = &s5;
-    g_methods[3].result_schema = &s1;
-    g_methods[4].method_id = METHOD_REASSIGN_RESOURCE;
-    g_methods[4].param_schema = &s2;
-    g_methods[4].result_schema = &s1;
-    g_methods[5].method_id = METHOD_SUBMIT_JOB;
-    g_methods[5].param_schema = &s7;
-    g_methods[5].result_schema = &s1;
-    g_methods[6].method_id = METHOD_GET_NEXT_JOB;
-    g_methods[6].param_schema = &s1;
-    g_methods[6].result_schema = &s4;
-    g_methods[7].method_id = METHOD_REPORT_JOB_RESULT;
-    g_methods[7].param_schema = &s3;
-    g_methods[7].result_schema = NULL;
-    g_methods[8].method_id = METHOD_MUTEX_TRY_LOCK;
-    g_methods[8].param_schema = &s2;
-    g_methods[8].result_schema = &s1;
-    g_methods[9].method_id = METHOD_MUTEX_UNLOCK;
-    g_methods[9].param_schema = &s2;
-    g_methods[9].result_schema = NULL;
-    g_methods[10].method_id = METHOD_GET_RESOURCE_INFO;
-    g_methods[10].param_schema = &s1;
-    g_methods[10].result_schema = &s6;
-    g_methods[11].method_id = METHOD_ALLOCATE_SLICE;
-    g_methods[11].param_schema = &s5; /* node_id, job_id, size, kind, sync_kind */
-    g_methods[11].result_schema = &s3; /* ok, resource_id, base */
-    g_methods[12].method_id = METHOD_RELEASE_SLICE;
-    g_methods[12].param_schema = &s2; /* resource_id, job_id */
-    g_methods[12].result_schema = &s1; /* ok */
-
-    g_cluster_scheduler_schema.methods = g_methods;
-    g_cluster_scheduler_schema.method_count = 13;
-}
+/* The cluster scheduler object's own schema -- same const-table form as
+ * g_resource_table above. Struct indices: 0=1 word, 1=2, 2=3, 3=4, 4=5,
+ * 5=6, 6=7. SCHEMA_IDX_NONE as a result schema means the method writes
+ * no response; as a param schema it would mean no validation, which no
+ * method here uses. */
+static const struct_schema_t cs_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE}, {2, 0, SCHEMA_IDX_NONE}, {3, 0, SCHEMA_IDX_NONE},
+    {4, 0, SCHEMA_IDX_NONE}, {5, 0, SCHEMA_IDX_NONE}, {6, 0, SCHEMA_IDX_NONE},
+    {7, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t cs_methods[] = {
+    {METHOD_JOIN_NODE, 3, SCHEMA_IDX_NONE}, /* node_id, arch, region_base,
+                                             * signal_target -- see
+                                             * node_data_t. Join is identity
+                                             * only; a node declares its own
+                                             * resources afterward, the same
+                                             * declare_resource path
+                                             * everything else uses -- see
+                                             * coreinit.c's own post-join
+                                             * calls. */
+    {METHOD_LEAVE_NODE, 0, SCHEMA_IDX_NONE},
+    {METHOD_REQUEST_ALLOCATION, 4, 1},
+    {METHOD_DECLARE_RESOURCE, 4, 0},
+    {METHOD_REASSIGN_RESOURCE, 1, 0},
+    {METHOD_SUBMIT_JOB, 6, 0},
+    {METHOD_GET_NEXT_JOB, 0, 3},
+    {METHOD_REPORT_JOB_RESULT, 2, SCHEMA_IDX_NONE},
+    {METHOD_MUTEX_TRY_LOCK, 1, 0},
+    {METHOD_MUTEX_UNLOCK, 1, SCHEMA_IDX_NONE},
+    {METHOD_GET_RESOURCE_INFO, 0, 5},
+    {METHOD_ALLOCATE_SLICE, 4, 2}, /* node_id, job_id, size, kind,
+                                    * sync_kind -> ok, resource_id, base */
+    {METHOD_RELEASE_SLICE, 1, 0},  /* resource_id, job_id -> ok */
+};
+static const object_schema_t cs_objects[] = {{0, 13}};
+const schema_table_t g_cluster_scheduler_table = {
+    cs_structs, 7, NULL, 0, cs_methods, 13, cs_objects, 1};
 
 typedef struct {
     uint64_t node_id;
@@ -502,21 +473,15 @@ typedef struct {
 
 #define NODE_METHOD_GET_INFO 0 /* dummy word in -> {node_id, arch, region_base} */
 
-static const struct_schema_t node_s1 = {.data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t node_s3 = {.data_words = 3, .pointer_count = 0, .pointers = NULL};
-
-static method_schema_t g_node_methods[1];
-static object_schema_t g_node_schema;
-
-static void node_object_build_schema(void)
-{
-    g_node_methods[0].method_id = NODE_METHOD_GET_INFO;
-    g_node_methods[0].param_schema = &node_s1;
-    g_node_methods[0].result_schema = &node_s3;
-
-    g_node_schema.methods = g_node_methods;
-    g_node_schema.method_count = 1;
-}
+static const struct_schema_t node_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE}, {3, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t node_methods[] = {
+    {NODE_METHOD_GET_INFO, 0, 1},
+};
+static const object_schema_t node_objects[] = {{0, 1}};
+const schema_table_t g_node_table = {
+    node_structs, 2, NULL, 0, node_methods, 1, node_objects, 1};
 
 static void node_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,
@@ -565,13 +530,14 @@ static capability_t create_node_object(uint64_t node_id, uint64_t arch,
     nd->region_base = region_base;
     nd->signal_target = signal_target;
 
-    uint64_t create_words[4] = {(uint64_t)(uintptr_t)node_handler,
+    uint64_t create_words[5] = {(uint64_t)(uintptr_t)node_handler,
                                 (uint64_t)(uintptr_t)nd,
-                                (uint64_t)(uintptr_t)&g_node_schema,
+                                (uint64_t)(uintptr_t)&g_node_table,
+                                CS_SCHEMA_NODE,
                                 (uint64_t)(uintptr_t)storage};
     uint8_t create_req[64];
     size_t create_req_len =
-        capnp_build_flat(create_req, sizeof(create_req), create_words, 4);
+        capnp_build_flat(create_req, sizeof(create_req), create_words, 5);
     uint8_t create_resp[24];
     size_t create_resp_len = 0;
     capability_t result = none;
@@ -638,24 +604,16 @@ typedef struct {
                                  * second round trip. */
 #define MUTEX_METHOD_UNLOCK 1 /* {requesting_job_id} -> {ok} */
 
-static const struct_schema_t mutex_s1 = {.data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t mutex_s2 = {.data_words = 2, .pointer_count = 0, .pointers = NULL};
-
-static method_schema_t g_mutex_methods[2];
-static object_schema_t g_mutex_schema;
-
-static void mutex_object_build_schema(void)
-{
-    g_mutex_methods[0].method_id = MUTEX_METHOD_TRY_LOCK;
-    g_mutex_methods[0].param_schema = &mutex_s1;
-    g_mutex_methods[0].result_schema = &mutex_s2;
-    g_mutex_methods[1].method_id = MUTEX_METHOD_UNLOCK;
-    g_mutex_methods[1].param_schema = &mutex_s1;
-    g_mutex_methods[1].result_schema = &mutex_s1;
-
-    g_mutex_schema.methods = g_mutex_methods;
-    g_mutex_schema.method_count = 2;
-}
+static const struct_schema_t csm_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE}, {2, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t csm_methods[] = {
+    {MUTEX_METHOD_TRY_LOCK, 0, 1},
+    {MUTEX_METHOD_UNLOCK, 0, 0},
+};
+static const object_schema_t csm_objects[] = {{0, 2}};
+const schema_table_t g_cs_mutex_table = {
+    csm_structs, 2, NULL, 0, csm_methods, 2, csm_objects, 1};
 
 static void mutex_handler(void *data, uint32_t method_id, const void *msg,
                           size_t len, void *response, size_t response_cap,
@@ -711,13 +669,14 @@ static void create_all_mutex_objects(void)
         md->locked = 0;
         md->holder_job_id = 0;
 
-        uint64_t create_words[4] = {(uint64_t)(uintptr_t)mutex_handler,
+        uint64_t create_words[5] = {(uint64_t)(uintptr_t)mutex_handler,
                                     (uint64_t)(uintptr_t)md,
-                                    (uint64_t)(uintptr_t)&g_mutex_schema,
+                                    (uint64_t)(uintptr_t)&g_cs_mutex_table,
+                                    CS_SCHEMA_MUTEX,
                                     (uint64_t)(uintptr_t)storage};
         uint8_t create_req[64];
         size_t create_req_len =
-            capnp_build_flat(create_req, sizeof(create_req), create_words, 4);
+            capnp_build_flat(create_req, sizeof(create_req), create_words, 5);
         uint8_t create_resp[24];
         size_t create_resp_len = 0;
         g_mutex_handles[i].handle = 0;
@@ -790,25 +749,16 @@ typedef struct {
                                               * (created and queried far
                                               * less often). */
 
-static const struct_schema_t job_s1 = {.data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t job_s6 = {.data_words = 6, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t job_s13 = {.data_words = 13, .pointer_count = 0, .pointers = NULL};
-
-static method_schema_t g_job_methods[2];
-static object_schema_t g_job_schema;
-
-static void job_object_build_schema(void)
-{
-    g_job_methods[0].method_id = JOB_METHOD_GET_INFO;
-    g_job_methods[0].param_schema = &job_s1;
-    g_job_methods[0].result_schema = &job_s13;
-    g_job_methods[1].method_id = JOB_METHOD_UPDATE_SCHEDULING_STATE;
-    g_job_methods[1].param_schema = &job_s6;
-    g_job_methods[1].result_schema = &job_s1;
-
-    g_job_schema.methods = g_job_methods;
-    g_job_schema.method_count = 2;
-}
+static const struct_schema_t job_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE}, {6, 0, SCHEMA_IDX_NONE}, {13, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t job_methods[] = {
+    {JOB_METHOD_GET_INFO, 0, 2},
+    {JOB_METHOD_UPDATE_SCHEDULING_STATE, 1, 0},
+};
+static const object_schema_t job_objects[] = {{0, 2}};
+const schema_table_t g_job_table = {
+    job_structs, 3, NULL, 0, job_methods, 2, job_objects, 1};
 
 static void job_handler(void *data, uint32_t method_id, const void *msg,
                         size_t len, void *response, size_t response_cap,
@@ -895,13 +845,14 @@ static capability_t create_job_object(job_type_t type, uint64_t ctx,
     jd->block_id = 0;
     jd->dispatched = 0;
 
-    uint64_t create_words[4] = {(uint64_t)(uintptr_t)job_handler,
+    uint64_t create_words[5] = {(uint64_t)(uintptr_t)job_handler,
                                 (uint64_t)(uintptr_t)jd,
-                                (uint64_t)(uintptr_t)&g_job_schema,
+                                (uint64_t)(uintptr_t)&g_job_table,
+                                CS_SCHEMA_JOB,
                                 (uint64_t)(uintptr_t)storage};
     uint8_t create_req[64];
     size_t create_req_len =
-        capnp_build_flat(create_req, sizeof(create_req), create_words, 4);
+        capnp_build_flat(create_req, sizeof(create_req), create_words, 5);
     uint8_t create_resp[24];
     size_t create_resp_len = 0;
     capability_t result = none;
@@ -1019,11 +970,6 @@ void cluster_scheduler_init_schema(
     g_resource_storage_next = 0;
     g_node_storage_next = 0;
 
-    cluster_scheduler_build_schema();
-    resource_object_build_schema();
-    node_object_build_schema();
-    mutex_object_build_schema();
-    job_object_build_schema();
     create_all_mutex_objects();
 
     /* The pool resource: the whole allocatable window (see

@@ -46,17 +46,19 @@ static void mem_lock_acquire_wait(void)
 #define METHOD_ALLOC 1
 #define METHOD_FREE 2
 
-static const struct_schema_t g_claim_request_schema = {
-    .data_words = 3, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t g_claim_result_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t g_alloc_request_schema = {
-    .data_words = 2, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t g_alloc_result_schema = {
-    .data_words = 2, .pointer_count = 0, .pointers = NULL};
-
-static method_schema_t g_methods[3];
-object_schema_t g_memory_manager_schema;
+static const struct_schema_t mem_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE}, /* claim result / free request+result shape */
+    {2, 0, SCHEMA_IDX_NONE}, /* alloc request {size, kind} */
+    {3, 0, SCHEMA_IDX_NONE}, /* claim request {base, size, kind} */
+};
+static const method_schema_t mem_methods[] = {
+    {METHOD_CLAIM, 2, 0},
+    {METHOD_ALLOC, 1, 1},
+    {METHOD_FREE, 0, 0},
+};
+static const object_schema_t mem_objects[] = {{0, 3}};
+const schema_table_t g_memory_manager_table = {
+    mem_structs, 3, NULL, 0, mem_methods, 3, mem_objects, 1};
 
 /* Shared by both the handler's CLAIM method and this file's own
  * init-time pre-registration of known-reserved regions -- one overlap
@@ -157,19 +159,6 @@ void memory_manager_init_schema(void)
 {
     trylock_init(&g_lock);
     g_claim_count = 0;
-
-    g_methods[0].method_id = METHOD_CLAIM;
-    g_methods[0].param_schema = &g_claim_request_schema;
-    g_methods[0].result_schema = &g_claim_result_schema;
-    g_methods[1].method_id = METHOD_ALLOC;
-    g_methods[1].param_schema = &g_alloc_request_schema;
-    g_methods[1].result_schema = &g_alloc_result_schema;
-    g_methods[2].method_id = METHOD_FREE;
-    g_methods[2].param_schema = &g_claim_result_schema; /* {base: u64} -- same 1-word shape */
-    g_methods[2].result_schema = &g_claim_result_schema;
-
-    g_memory_manager_schema.methods = g_methods;
-    g_memory_manager_schema.method_count = 3;
 
     /* Known-reserved regions, claimed simply by what they are, before
      * anything else could possibly ask for them. Sizes are generous,

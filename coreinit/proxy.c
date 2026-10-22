@@ -43,7 +43,7 @@ static void proxy_handler(void *data, uint32_t method_id, const void *msg,
 
 capability_t create_proxy(capability_t remote_target,
                           remote_invoke_fn_t remote_invoke,
-                          const object_schema_t *schema)
+                          const schema_table_t *table, schema_idx_t schema_idx)
 {
     capability_t none = {0};
 
@@ -62,11 +62,13 @@ capability_t create_proxy(capability_t remote_target,
     slot->remote_target = remote_target;
     slot->remote_invoke = remote_invoke;
 
-    uint64_t words[4] = {(uint64_t)(uintptr_t)proxy_handler,
-                         (uint64_t)(uintptr_t)slot, (uint64_t)(uintptr_t)schema,
+    uint64_t words[5] = {(uint64_t)(uintptr_t)proxy_handler,
+                         (uint64_t)(uintptr_t)slot,
+                         (uint64_t)(uintptr_t)table,
+                         (uint64_t)schema_idx,
                          (uint64_t)(uintptr_t)slot->record_storage};
     uint8_t req[64];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 4);
+    size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
     uint8_t resp[24];
     size_t resp_len = 0;
     if (!g_local_invoke(g_factory, 0, req, req_len, resp, sizeof(resp),

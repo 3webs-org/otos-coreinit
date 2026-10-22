@@ -22,41 +22,18 @@ static volatile int g_mutex_used[MAX_MUTEXES]; /* CAS-claimed directly,
 #define METHOD_LOCK 1
 #define METHOD_UNLOCK 2
 
-static const struct_schema_t g_create_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t g_create_result_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t g_id_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL};
-static const struct_schema_t g_lock_result_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL}; /* {ok: u64} */
-
-static method_schema_t g_methods[3];
-object_schema_t g_mutex_manager_schema;
-
-void mutex_manager_build_schema(void)
-{
-    g_methods[0].method_id = METHOD_CREATE;
-    g_methods[0].param_schema = &g_create_schema;
-    g_methods[0].result_schema = &g_create_result_schema;
-
-    g_methods[1].method_id = METHOD_LOCK;
-    g_methods[1].param_schema = &g_id_schema;
-    g_methods[1].result_schema = &g_lock_result_schema; /* try-only --
-                                                          * see handler;
-                                                          * caller must
-                                                          * check ok and
-                                                          * retry itself
-                                                          * (never spins
-                                                          * in here) */
-
-    g_methods[2].method_id = METHOD_UNLOCK;
-    g_methods[2].param_schema = &g_id_schema;
-    g_methods[2].result_schema = NULL;
-
-    g_mutex_manager_schema.methods = g_methods;
-    g_mutex_manager_schema.method_count = 3;
-}
+static const struct_schema_t mm_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t mm_methods[] = {
+    {METHOD_CREATE, 0, 0},
+    {METHOD_LOCK, 0, 0}, /* try-only -- see handler; caller must check ok
+                          * and retry itself (never spins in here) */
+    {METHOD_UNLOCK, 0, SCHEMA_IDX_NONE},
+};
+static const object_schema_t mm_objects[] = {{0, 3}};
+const schema_table_t g_mutex_manager_table = {
+    mm_structs, 1, NULL, 0, mm_methods, 3, mm_objects, 1};
 
 void mutex_manager_init_schema(void)
 {
@@ -64,8 +41,6 @@ void mutex_manager_init_schema(void)
         g_mutex_used[i] = 0;
         trylock_init(&g_mutexes[i]);
     }
-
-    mutex_manager_build_schema();
 }
 
 void mutex_manager_handler(void *data, uint32_t method_id, const void *msg,

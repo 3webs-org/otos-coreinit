@@ -32,9 +32,10 @@ typedef int (*remote_invoke_fn_t)(capability_t target, uint32_t method_id,
  * request against the LOCAL object's schema before ever calling this
  * proxy's handler, so a mismatch would reject legitimate calls. This is
  * safe in practice because every node runs a byte-identical compiled
- * image: referencing the same statically-defined schema struct (e.g.
- * &g_mutex_manager_schema) from any node's own code always means that
- * node's own copy of the identical data.
+ * image: referencing the same statically-defined const table (e.g.
+ * &g_mutex_manager_table with MUTEX_MGR_SCHEMA_MUTEX_MANAGER) from any
+ * node's own code always means that node's own copy of the identical
+ * data.
  *
  * SCOPE: remote_invoke must be a function already reachable from this
  * node -- today that means the BSP's own kernel_invoke (every non-BSP
@@ -45,7 +46,7 @@ typedef int (*remote_invoke_fn_t)(capability_t target, uint32_t method_id,
  * real, separate future work, not quietly assumed to work here. */
 capability_t create_proxy(capability_t remote_target,
                           remote_invoke_fn_t remote_invoke,
-                          const object_schema_t *schema);
+                          const schema_table_t *table, schema_idx_t schema_idx);
 
 /* Called once, by each node, before create_proxy is used -- needs this
  * node's own LOCAL kernel_invoke, since a proxy is created the same

@@ -82,7 +82,8 @@ static uint8_t g_bootstrap_records[BOOTSTRAP_RECORD_POOL_SIZE][CAP_RECORD_SIZE]
 static size_t g_bootstrap_record_next;
 
 static capability_t create_object(object_handler_fn handler, void *data,
-                                  const object_schema_t *schema)
+                                  const schema_table_t *table,
+                                  schema_idx_t schema_idx)
 {
     if (g_bootstrap_record_next >= BOOTSTRAP_RECORD_POOL_SIZE) {
         kprintf("[coreinit] create_object: FAILED, bootstrap record pool "
@@ -92,12 +93,19 @@ static capability_t create_object(object_handler_fn handler, void *data,
     }
     void *record_storage = g_bootstrap_records[g_bootstrap_record_next++];
 
-    uint64_t words[4] = {(uint64_t)(uintptr_t)handler,
+    /* CREATE's request shape is CAP_CREATE_REQUEST_WORDS data words:
+     * handlerFn, handlerData, schemaTable, schemaIndex, recordStorage --
+     * the exact order cap.c's factory_handler unpacks them in. The
+     * schemaIndex rides in a u64 word but is a uint16_t index into the
+     * table, not a pointer: integer initialisers need no relocation, so
+     * the table bytes are identical for every kernel instance. */
+    uint64_t words[5] = {(uint64_t)(uintptr_t)handler,
                          (uint64_t)(uintptr_t)data,
-                         (uint64_t)(uintptr_t)schema,
+                         (uint64_t)(uintptr_t)table,
+                         (uint64_t)schema_idx,
                          (uint64_t)(uintptr_t)record_storage};
     uint8_t req[64];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 4);
+    size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
 
     uint8_t resp[24];
     size_t resp_len = 0;
@@ -363,24 +371,22 @@ static void run_job_exec_priority_test(void)
     job_exec_free_stack(slot_low);
 }
 
-static const struct_schema_t g_msg_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL};
-/* See kernel/cap.c's own comment on init_object_zero_schema for why
- * these are runtime-populated rather than const-initialized with baked
- * pointers -- same reasoning, same fix, needed here too since coreinit
- * is exactly as subject to being loaded at a discovered-at-runtime base
- * address as the kernel is. */
-static method_schema_t g_plain_methods[1];
-static object_schema_t g_plain_schema;
-
-static void init_plain_schema(void)
-{
-    g_plain_methods[0].method_id = 0;
-    g_plain_methods[0].param_schema = &g_msg_schema;
-    g_plain_methods[0].result_schema = NULL;
-    g_plain_schema.methods = g_plain_methods;
-    g_plain_schema.method_count = 1;
-}
+/* The "plain" object schema (tick_counter and anything else with one
+ * method taking one word and writing no response) -- const table form,
+ * same reasoning as every other schema in this tree: see schema.h's own
+ * header comment. Integer initialisers need no relocation, so these
+ * bytes are identical for every kernel instance and nothing is ever
+ * populated at runtime. */
+static const struct_schema_t plain_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE},
+};
+static const method_schema_t plain_methods[] = {
+    {0, 0, SCHEMA_IDX_NONE},
+};
+static const object_schema_t plain_objects[] = {{0, 1}};
+static const schema_table_t g_plain_table = {
+    plain_structs, 1, NULL, 0, plain_methods, 1, plain_objects, 1};
+#define PLAIN_SCHEMA_TICK_COUNTER 0
 
 /* ---- Device discovery ---- */
 
@@ -415,21 +421,17 @@ static void print_pci_device(const pci_device_info_t *dev, void *user_data)
  * everything else. Method 0 = read one sector by LBA. Deliberately
  * unguarded -- see file header. ---- */
 
-static const struct_schema_t g_disk_request_schema = {
-    .data_words = 1, .pointer_count = 0, .pointers = NULL}; /* {lba: u64} */
-static const struct_schema_t g_disk_response_schema = {
-    .data_words = 64, .pointer_count = 0, .pointers = NULL}; /* 512 bytes */
-static method_schema_t g_disk_methods[1];
-static object_schema_t g_disk_schema;
-
-static void init_disk_schema(void)
-{
-    g_disk_methods[0].method_id = 0;
-    g_disk_methods[0].param_schema = &g_disk_request_schema;
-    g_disk_methods[0].result_schema = &g_disk_response_schema;
-    g_disk_schema.methods = g_disk_methods;
-    g_disk_schema.method_count = 1;
-}
+static const struct_schema_t disk_structs[] = {
+    {1, 0, SCHEMA_IDX_NONE},  /* {lba: u64} */
+    {64, 0, SCHEMA_IDX_NONE}, /* 512 bytes */
+};
+static const method_schema_t disk_methods[] = {
+    {0, 0, 1},
+};
+static const object_schema_t disk_objects[] = {{0, 1}};
+static const schema_table_t g_disk_table = {
+    disk_structs, 2, NULL, 0, disk_methods, 1, disk_objects, 1};
+#define DISK_SCHEMA_DISK 0
 
 static void disk_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,
@@ -632,14 +634,16 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                g_cross_core_signal_test_seen ? "PASS" : "FAIL");
 
     capability_t irq_manager =
-        create_object(irq_manager_handler, NULL, &g_irq_manager_schema);
+        create_object(irq_manager_handler, NULL, &g_irq_manager_table,
+                      IRQ_SCHEMA_MANAGER);
     job_kprintf(self_job_id,
                "[coreinit] irq_manager object handle: %u (kept for future "
                "IRQ1+ use -- IRQ0 itself is masked now, see lapic_timer)\n",
                (unsigned)irq_manager.handle);
 
     capability_t tick_counter =
-        create_object(tick_counter_handler, NULL, &g_plain_schema);
+        create_object(tick_counter_handler, NULL, &g_plain_table,
+                      PLAIN_SCHEMA_TICK_COUNTER);
     job_kprintf(self_job_id,
                "[coreinit] tick_counter object handle: %u, bound to this "
                "core's own LAPIC timer\n",
@@ -713,7 +717,8 @@ static job_result_t job_disk_demo(void *ctx, uint64_t self_job_id,
     }
     kprintf("\n[coreinit] === job: minting the disk object (real "
             "ATA-backed) ===\n");
-    capability_t disk = create_object(disk_handler, NULL, &g_disk_schema);
+    capability_t disk = create_object(disk_handler, NULL, &g_disk_table,
+                                      DISK_SCHEMA_DISK);
     kprintf("[coreinit] disk object handle: %u\n", (unsigned)disk.handle);
 
     uint64_t lba0 = 0;
@@ -1028,12 +1033,13 @@ void coreinit_main(struct init_boot_info *info)
      * the shared-services setup below (which happens before topology
      * discovery would otherwise give us this) prints untagged, and on a
      * shared, unlocked UART that reads as attributed to whichever OTHER
-     * core happened to interleave a tagged line at the same moment. */
-    uint64_t my_apic_id = topology_self_id();
-    serial_set_core_tag((int)my_apic_id);
-
-    init_plain_schema();
-    init_disk_schema();
+     * core happened to interleave a tagged line at the same moment.
+     * This value is also the node id used for the cluster-scheduler
+     * join below: the architecture's own core identity -- APIC ID on
+     * x86_64, MPIDR affinity on aarch64 -- which is what
+     * smp_aarch64.c's greeting-job affinity matches against. */
+    uint64_t my_node_id = topology_self_id();
+    serial_set_core_tag((int)my_node_id);
 
     kprintf("[coreinit] stage 1: running on the single-syscall "
             "kernel_invoke model\n");
@@ -1062,10 +1068,12 @@ void coreinit_main(struct init_boot_info *info)
                 "===\n");
         mutex_manager_init_schema();
         mutex_manager = create_object(mutex_manager_handler, NULL,
-                                      &g_mutex_manager_schema);
+                                      &g_mutex_manager_table,
+                                      MUTEX_MGR_SCHEMA_MUTEX_MANAGER);
         memory_manager_init_schema();
         memory_manager = create_object(memory_manager_handler, NULL,
-                                       &g_memory_manager_schema);
+                                       &g_memory_manager_table,
+                                       MEM_MGR_SCHEMA_MEMORY_MANAGER);
         kprintf("[coreinit] mutex_manager handle %u, memory_manager "
                 "handle %u\n",
                 (unsigned)mutex_manager.handle,
@@ -1092,10 +1100,12 @@ void coreinit_main(struct init_boot_info *info)
         /* The PROXY objects we're about to create are validated by the
          * LOCAL kernel against the schema THEY were created with, not
          * against whatever the real remote object implements -- so this
-         * node needs its own populated copy of the same schema struct
-         * (every node has one, being byte-identical compiled code) even
-         * though it will never run the real handler logic locally. */
-        mutex_manager_build_schema();
+         * node references the same const table and index (every node has
+         * one, being byte-identical compiled code) even though it will
+         * never run the real handler logic locally. With index-based
+         * schemas there is nothing to populate first: the table is const
+         * data, identical on every instance, which is what let the old
+         * per-instance *_build_schema calls disappear. */
         remote_invoke_fn_t bsp_invoke =
             (remote_invoke_fn_t)(uintptr_t)info->bsp_kernel_invoke_addr;
         capability_t remote_mutex_manager;
@@ -1107,7 +1117,8 @@ void coreinit_main(struct init_boot_info *info)
          * else. hw_mutex_lock/unlock below don't need to know or care
          * that it's actually remote. */
         g_hw_mutex_manager = create_proxy(remote_mutex_manager, bsp_invoke,
-                                          &g_mutex_manager_schema);
+                                          &g_mutex_manager_table,
+                                          MUTEX_MGR_SCHEMA_MUTEX_MANAGER);
         g_hw_mutex_invoke = g_kernel_invoke;
         g_hw_mutex_id = info->hardware_mutex_id;
         kprintf("[coreinit] mutex_manager reachable via local proxy handle "
@@ -1124,7 +1135,8 @@ void coreinit_main(struct init_boot_info *info)
         cluster_scheduler_init_schema(memory_manager, g_kernel_invoke,
                                       g_factory);
         cluster_scheduler = create_object(cluster_scheduler_handler, NULL,
-                                          &g_cluster_scheduler_schema);
+                                          &g_cluster_scheduler_table,
+                                          CS_SCHEMA_CLUSTER_SCHEDULER);
         kprintf("[coreinit] cluster_scheduler handle %u\n",
                 (unsigned)cluster_scheduler.handle);
     } else {
@@ -1132,11 +1144,9 @@ void coreinit_main(struct init_boot_info *info)
         remote_cluster_scheduler.handle = info->cluster_scheduler_handle;
         remote_invoke_fn_t bsp_invoke =
             (remote_invoke_fn_t)(uintptr_t)info->bsp_kernel_invoke_addr;
-        cluster_scheduler_build_schema(); /* same reasoning as
-                                           * mutex_manager_build_schema
-                                           * above */
         cluster_scheduler = create_proxy(remote_cluster_scheduler, bsp_invoke,
-                                         &g_cluster_scheduler_schema);
+                                         &g_cluster_scheduler_table,
+                                         CS_SCHEMA_CLUSTER_SCHEDULER);
         kprintf("[coreinit] cluster_scheduler reachable via local proxy "
                 "handle %u\n",
                 (unsigned)cluster_scheduler.handle);
@@ -1185,7 +1195,7 @@ void coreinit_main(struct init_boot_info *info)
      * reach the cluster scheduler, and join the cluster. All of this is
      * meaningful even before ACPI succeeds (job-type registration
      * doesn't depend on it), so it happens unconditionally; only
-     * join_node needs a real apic_id, which defaults sensibly to 0 if
+     * join_node needs a real node id, which defaults sensibly to 0 if
      * ACPI discovery somehow failed. */
     register_job_types();
     uint64_t my_region_base = is_bsp ? BSP_MAILBOX_REGION_BASE
@@ -1193,11 +1203,11 @@ void coreinit_main(struct init_boot_info *info)
     /* Always the LOCAL kernel_invoke now -- cluster_scheduler is either
      * genuinely local (BSP) or a local proxy (AP), so there's no more
      * "which invoke function" special-casing needed here at all. */
-    scheduler_client_init(g_kernel_invoke, cluster_scheduler, (uint8_t)my_apic_id);
+    scheduler_client_init(g_kernel_invoke, cluster_scheduler, (uint8_t)my_node_id);
 
     /* The architecture code this node joins as -- resolved per-arch, like
      * everything else in topology. */
-    uint64_t reg_words[4] = {my_apic_id, topology_cluster_arch(), my_region_base,
+    uint64_t reg_words[4] = {my_node_id, topology_cluster_arch(), my_region_base,
                              cross_core_signal_my_target()};
     uint8_t reg_req[48];
     size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 4);
@@ -1240,12 +1250,9 @@ void coreinit_main(struct init_boot_info *info)
         remote_serial.handle = info->serial_resource_handle;
         remote_invoke_fn_t bsp_invoke =
             (remote_invoke_fn_t)(uintptr_t)info->bsp_kernel_invoke_addr;
-        resource_object_build_schema(); /* same reasoning as
-                                         * mutex_manager_build_schema /
-                                         * cluster_scheduler_build_schema
-                                         * above */
         g_serial_resource =
-            create_proxy(remote_serial, bsp_invoke, &g_resource_schema);
+            create_proxy(remote_serial, bsp_invoke, &g_resource_table,
+                         CS_SCHEMA_RESOURCE);
         kprintf("[coreinit] serial resource reachable via local proxy "
                 "handle 0x%X\n",
                 (unsigned)g_serial_resource.handle);

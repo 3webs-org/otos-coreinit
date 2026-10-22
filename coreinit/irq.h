@@ -30,7 +30,8 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t target, uint32_t method_
  * invoked (method 0, message = the tick/IRQ number as a single u64) every
  * time IRQ number `irq` fires. Binding is itself validated the same way
  * any other invocation is -- there is nothing special-cased about it. */
-extern object_schema_t g_irq_manager_schema;
+extern const schema_table_t g_irq_manager_table;
+#define IRQ_SCHEMA_MANAGER 0
 void irq_manager_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,
                          size_t *out_response_len);
