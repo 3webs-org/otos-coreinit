@@ -106,6 +106,28 @@ int fdt_cell_counts(const void *blob, int node_offset, int *out_address_cells,
  * be NULL) and returns 1, or 0 when there is no such entry. This is the
  * two-out-parameter form of fdt_reg_to_cpu_addr, which fills an fdt_range_t;
  * both share one implementation. */
+/* Reads the cell counts a node DECLARES FOR ITS CHILDREN, i.e. its own
+ * #address-cells / #size-cells, with no inheritance. Returns 1 only when at
+ * least one of them is present on the node itself; *ac and *sc are undefined
+ * when it returns 0, so "declares nothing" is distinguishable from "declares
+ * 0" -- which are different answers and conflating them silently mis-sizes
+ * every child reg.
+ *
+ * This is the companion to fdt_cell_counts, and the two answer different
+ * questions. fdt_cell_counts(node) gives the counts that size THAT NODE's own
+ * reg entries, which per spec come from its parent. fdt_own_cell_counts(node)
+ * gives the counts that size its CHILDREN's reg entries. A caller checking that
+ * a tree is self-consistent needs the second: asking "/cpus, what do you
+ * declare for your children?" has no answer through fdt_cell_counts, because
+ * that function reports what /cpus's PARENT declared.
+ *
+ * Whichever of the two output values the node does not declare is left
+ * untouched, so a caller wanting the full effective pair should assign the
+ * specification's defaults first and let this function fill in what the node
+ * actually declares. */
+int fdt_own_cell_counts(const void *blob, int node_offset, int *out_address_cells,
+                        int *out_size_cells);
+
 int fdt_reg_to_addr(const void *blob, int node_offset, uint64_t *out_base,
                     uint64_t *out_size);
 
