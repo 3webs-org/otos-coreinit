@@ -63,8 +63,40 @@ case "$ARCH" in
         ASM_SOURCES="coreinit/ap_trampoline_x86_64.S coreinit/job_exec_switch_x86_64.S"
         LD_ARCH=x86_64
         ;;
+    aarch64)
+        TARGET=aarch64-apple-darwin
+        CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
+        
+        # aarch64 source files (INCOMPLETE: missing timer, IRQ, SMP, MMU, boot)
+        SOURCES="
+            coreinit/coreinit.c
+            coreinit/serial_aarch64.c
+            coreinit/mutex_mgr.c
+            coreinit/mem_mgr.c
+            coreinit/scheduler.c
+            coreinit/cluster_scheduler.c
+            coreinit/proxy.c
+            coreinit/pagefault.c
+            coreinit/job_memory.c
+            coreinit/job_exec.c
+        "
+        ASM_SOURCES=""
+        LD_ARCH=arm64
+        
+        # Fail early with a clear message: aarch64 backend is incomplete
+        echo "ERROR: ARCH=aarch64 is incomplete. Missing implementations:" >&2
+        echo "  - coreinit/irq_aarch64.c (GICv2/v3)" >&2
+        echo "  - coreinit/smp_aarch64.c (PSCI)" >&2
+        echo "  - coreinit/arch_mmu_aarch64.c (ARMv8 page tables)" >&2
+        echo "  - coreinit/cross_core_signal_aarch64.c (SGI)" >&2
+        echo "  - coreinit/lapic_timer_aarch64.c (generic timer)" >&2
+        echo "  - coreinit/ap_trampoline_aarch64.S (secondary core boot)" >&2
+        echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
+        echo "Currently available: serial_aarch64.c (PL011 UART)" >&2
+        exit 1
+        ;;
     *)
-        echo "ERROR: Unknown ARCH='$ARCH'. Supported: x86_64" >&2
+        echo "ERROR: Unknown ARCH='$ARCH'. Supported: x86_64, aarch64" >&2
         exit 1
         ;;
 esac
