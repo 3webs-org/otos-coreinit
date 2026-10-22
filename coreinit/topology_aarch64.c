@@ -267,17 +267,23 @@ uint64_t topology_boot_hint(const struct init_boot_info *info)
      * two could be silently swapped and fail only later, inside the FDT
      * parser.
      *
-     * NOTE ON CONVENTION, recorded where the ARM side actually diverges:
-     * the DTB arriving in x0 is the EMBEDDED entry convention. Every
-     * standard platform is supposed to be entered through the same
-     * XNU-style handoff that produces init_boot_info, so that one kernel
-     * binary serves every standard port with one bootup convention --
-     * that uniformity is why the convention was chosen. The aarch64 boot
-     * stub currently takes the embedded path on a standard platform
-     * (QEMU virt), which is a gap in the kernel's ARM port, not a
-     * deliberate design: today fdt_blob_phys is populated only because
-     * the stub captured x0 directly. When the ARM port grows the
-     * XNU-style entry (EFI stub -> handoff -> interrupt), this function
-     * keeps its one-line body and only the producer changes. */
+     * NOTE ON CONVENTION -- what is standard here and what is not. x0
+     * holding the DTB at kernel entry IS the standard arm64 boot protocol,
+     * the same contract Linux's own arm64 Image is entered under; it is
+     * not an embedded-only convention, and this path does not misuse it.
+     * What is non-standard about the current QEMU run is that -kernel
+     * loads the kernel directly: no firmware, no bootloader in front. The
+     * uniform-handoff property that one kernel binary per standard port
+     * was chosen for lives at the kernel->init boundary (init_boot_info),
+     * not at the entry register -- and that boundary is already uniform,
+     * carrying both machine-description fields. The intended chain is
+     * AAVMF -> GRUB (arm64-efi) -> the kernel, entered per the same arm64
+     * boot protocol; GRUB's xnu loader is x86-only, so the loader COMMAND
+     * differs per arch while the handoff shape does not.
+     *
+     * This function is unaffected either way: fdt_blob_phys is populated
+     * by the kernel's boot path from the DTB the platform supplied, and
+     * which bootloader (if any) handed that DTB over is not this
+     * function's concern. */
     return info->fdt_blob_phys;
 }

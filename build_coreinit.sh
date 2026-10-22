@@ -115,6 +115,17 @@ case "$ARCH" in
         # be an unloadable image. coreinit still declares its own load
         # address and the kernel honors it via target_base=0 (same
         # convention, only the number changes).
+        #
+        # ADDRESS MARGIN, stated rather than left as an accident of two
+        # independent choices: the aarch64 kernel links at 0x40080000, so
+        # this load address sits 1.5 MiB (0x180000) above the kernel's
+        # base. The kernel image is ~190 KiB today, leaving roughly 1.3 MiB
+        # of slack. That is comfortable but not enforced by anything -- a
+        # kernel that grows past ~1.5 MiB, or a coreinit image that grows
+        # down, would collide silently. If either outgrows its space, move
+        # coreinit up (0x40400000 is 4 MiB in) rather than shrinking the
+        # kernel: coreinit declares its own address, so this is a one-line
+        # change on this side with no kernel edit.
         PAGEZERO=0x40200000
         # The FDT object belongs here rather than on the shared link
         # line: lib/fdt.c is only in this arch's SOURCES, so the object
