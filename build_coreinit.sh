@@ -42,15 +42,15 @@ case "$ARCH" in
         # x86_64 source files
         SOURCES="
             coreinit/coreinit.c
-            coreinit/serial.c
-            coreinit/pci.c
-            coreinit/ata.c
-            coreinit/irq.c
-            coreinit/acpi.c
-            coreinit/smp.c
+            coreinit/serial_x86_64.c
+            coreinit/pci_x86_64.c
+            coreinit/ata_x86_64.c
+            coreinit/irq_x86_64.c
+            coreinit/acpi_x86_64.c
+            coreinit/smp_x86_64.c
             coreinit/mutex_mgr.c
             coreinit/mem_mgr.c
-            coreinit/lapic_timer.c
+            coreinit/lapic_timer_x86_64.c
             coreinit/scheduler.c
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
@@ -60,7 +60,7 @@ case "$ARCH" in
             coreinit/cross_core_signal_x86_64.c
             coreinit/arch_mmu_x86_64.c
         "
-        ASM_SOURCES="coreinit/job_exec_switch.S"
+        ASM_SOURCES="coreinit/ap_trampoline_x86_64.S coreinit/job_exec_switch_x86_64.S"
         LD_ARCH=x86_64
         ;;
     *)
@@ -79,6 +79,27 @@ for src in $SOURCES; do
         arch_mmu_x86_64)
             obj="$BUILD/coreinit_arch_mmu.o"
             ;;
+        serial_x86_64)
+            obj="$BUILD/coreinit_serial.o"
+            ;;
+        irq_x86_64)
+            obj="$BUILD/coreinit_irq.o"
+            ;;
+          smp_x86_64)
+            obj="$BUILD/coreinit_smp.o"
+            ;;
+        lapic_timer_x86_64)
+            obj="$BUILD/coreinit_lapic_timer.o"
+            ;;
+        pci_x86_64)
+            obj="$BUILD/coreinit_pci.o"
+            ;;
+        ata_x86_64)
+            obj="$BUILD/coreinit_ata.o"
+            ;;
+        acpi_x86_64)
+            obj="$BUILD/coreinit_acpi.o"
+            ;;
         coreinit)
             obj="$BUILD/coreinit_main.o"
             ;;
@@ -92,7 +113,17 @@ done
 # Compile assembly sources
 for src in $ASM_SOURCES; do
     base=$(basename "$src" .S)
-    obj="$BUILD/coreinit_${base}.o"
+    case "$base" in
+          ap_trampoline_x86_64)
+              obj="$BUILD/coreinit_ap_trampoline.o"
+            ;;
+        job_exec_switch_x86_64)
+            obj="$BUILD/coreinit_job_exec_switch.o"
+            ;;
+        *)
+            obj="$BUILD/coreinit_${base}.o"
+            ;;
+    esac
     "$CC" -target $TARGET -c "$ROOT/$src" -o "$obj"
 done
 
