@@ -254,3 +254,15 @@ uint64_t topology_cluster_arch(void)
 {
     return CLUSTER_ARCH_AARCH64;
 }
+
+uint64_t topology_boot_hint(const struct init_boot_info *info)
+{
+    /* aarch64's machine description is the device tree, not ACPI. The
+     * kernel captured it from x0 at entry (see arch/boot_aarch64.S, which
+     * stores it before anything else can clobber it) and validated it, so
+     * this hands that address on. Deliberately NOT early_rsdp_phys: both
+     * are opaque physical addresses typed uint64_t, which is exactly why
+     * the choice lives here, in the architecture backend, rather than at
+     * the neutral call site where the two could be silently swapped. */
+    return info->fdt_blob_phys;
+}

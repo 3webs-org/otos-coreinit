@@ -265,3 +265,13 @@ uint64_t topology_cluster_arch(void)
 {
     return CLUSTER_ARCH_X86_64;
 }
+
+uint64_t topology_boot_hint(const struct init_boot_info *info)
+{
+    /* x86_64's machine description is ACPI. The kernel already did the one
+     * lookup init cannot redo on an EFI-only boot -- walking GRUB's own
+     * boot_args through the EFI system table to the RSDP -- so this is
+     * simply the handoff of that result. 0 means "not found", which
+     * topology_discover accepts as "fall back to a legacy BIOS scan". */
+    return info->early_rsdp_phys;
+}

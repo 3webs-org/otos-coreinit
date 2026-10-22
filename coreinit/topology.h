@@ -20,6 +20,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "../include/init_abi.h"
 
 #define TOPOLOGY_MAX_CORES 64
 
@@ -66,6 +67,23 @@ typedef struct {
  *
  * Implemented in acpi_x86_64.c on x86_64, fdt_aarch64.c on aarch64. */
 int topology_discover(topology_t *out, uint64_t arch_hint);
+
+/* The machine-description hint topology_discover wants, extracted from the
+ * kernel's own boot handoff. This is what makes two different boot
+ * conventions meet ONE neutral call site: each platform describes the
+ * machine in its own container, and each arch's own backend knows which
+ * field of init_boot_info carries it.
+ *
+ *   x86_64: early_rsdp_phys -- the machine is described by ACPI, reached
+ *           through the RSDP the kernel found via the EFI config table.
+ *   aarch64: fdt_blob_phys -- the machine is described by a device tree,
+ *           captured from x0 at kernel entry per the arm64 boot protocol.
+ *
+ * Calling topology_discover directly with a hand-picked field is the error
+ * this exists to prevent: both fields are opaque uint64_t physical
+ * addresses, so handing an RSDP to an FDT parser (or the reverse) is a
+ * mistake the C compiler cannot catch. It is caught here instead. */
+uint64_t topology_boot_hint(const struct init_boot_info *info);
 
 /* Returns this core's own identifier in the same namespace topology_discover
  * uses (APIC ID on x86_64, MPIDR on aarch64). Needed to know which entry in

@@ -1181,7 +1181,7 @@ void coreinit_main(struct init_boot_info *info)
      * function (it never returns) as an ordinary local variable, same as
      * everything else coreinit_main sets up before handing off. */
     static topology_t topo;
-    int have_topo = topology_discover(&topo, info->early_rsdp_phys);
+    int have_topo = topology_discover(&topo, topology_boot_hint(info));
     if (have_topo) {
         kprintf("[coreinit] this core's own ID: %llu\n",
                 (unsigned long long)topology_self_id());
