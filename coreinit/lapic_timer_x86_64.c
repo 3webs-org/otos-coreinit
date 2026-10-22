@@ -1,4 +1,5 @@
-#include "lapic_timer.h"
+#include "timer.h"
+#include "lapic_timer_x86_64.h"
 #include "arch_x86_64.h"
 #include "cap.h"
 #include "capnp_build.h"
@@ -172,4 +173,55 @@ void lapic_timer_install_isr(void *isr)
 void lapic_timer_restore_normal_isr(void)
 {
     irq_install_handler(LAPIC_TIMER_VECTOR, (void *)isr_lapic_timer);
+}
+
+/* --- Architecture-neutral timer.h interface implementation --- */
+
+uint64_t timer_core_init(
+    uint64_t base_or_calibration,
+    uint64_t calibration_hint,
+    int (*kernel_invoke_fn)(capability_t, uint32_t, const void *, size_t,
+                           void *, size_t, size_t *))
+{
+    /* x86_64: base_or_calibration is the LAPIC MMIO base address,
+     * calibration_hint is counts per 10ms (0 = calibrate now, BSP only). */
+    uint32_t lapic_base = (uint32_t)base_or_calibration;
+    uint32_t count;
+    
+    if (calibration_hint == 0) {
+        /* BSP path: calibrate against the PIT, then start. The BSP must
+         * have already called irq_core_init to set up the PIT tick source. */
+        count = lapic_timer_calibrate(lapic_base);
+        lapic_timer_start(lapic_base, count, kernel_invoke_fn);
+    } else {
+        /* AP path: use the BSP's published calibration. */
+        count = (uint32_t)calibration_hint;
+        lapic_timer_start(lapic_base, count, kernel_invoke_fn);
+    }
+    return count;
+}
+
+void timer_bind(capability_t target)
+{
+    lapic_timer_bind(target);
+}
+
+uint64_t timer_get_ticks(void)
+{
+    return lapic_timer_get_ticks();
+}
+
+void timer_eoi(void)
+{
+    lapic_timer_eoi();
+}
+
+void timer_install_isr(void *isr)
+{
+    lapic_timer_install_isr(isr);
+}
+
+void timer_restore_normal_isr(void)
+{
+    lapic_timer_restore_normal_isr();
 }

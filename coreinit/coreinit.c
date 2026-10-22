@@ -26,7 +26,7 @@
 #include "arch_mmu.h"
 #include "cross_core_signal.h"
 #include "irq.h"
-#include "lapic_timer.h"
+#include "timer.h"
 #include "job_memory.h"
 #include "job_exec.h"
 #include "mem_mgr.h"
@@ -584,20 +584,20 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
          * all. */
         hw_mutex_lock();
         irq_core_init(g_kernel_invoke);
-        uint32_t count = lapic_timer_calibrate(c->lapic_base);
+        /* timer_core_init calibrates (x86) or initializes (aarch64) and
+         * returns the calibration value for the SMP job to publish. */
+        g_lapic_calibration = (uint32_t)timer_core_init(c->lapic_base, 0,
+                                                        g_kernel_invoke);
         hw_mutex_unlock();
-
-        lapic_timer_start(c->lapic_base, count, g_kernel_invoke);
-        g_lapic_calibration = count;
     } else {
         job_kprintf(self_job_id,
                    "[coreinit]   not the BSP -- skipping the legacy PIC/PIT "
                    "entirely, using the BSP's own published calibration "
                    "instead\n");
         irq_core_init(g_kernel_invoke);
-        lapic_timer_start(c->lapic_base,
-                          (uint32_t)c->discovered_lapic_calibration,
-                          g_kernel_invoke);
+        timer_core_init(c->lapic_base,
+                       (uint32_t)c->discovered_lapic_calibration,
+                       g_kernel_invoke);
     }
 
     /* The IDT is now genuinely loaded and stable on this core (both
@@ -642,7 +642,7 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                "[coreinit] tick_counter object handle: %u, bound to this "
                "core's own LAPIC timer\n",
                (unsigned)tick_counter.handle);
-    lapic_timer_bind(tick_counter);
+    timer_bind(tick_counter);
 
     return JOB_FINISHED;
 }
