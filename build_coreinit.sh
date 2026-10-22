@@ -71,14 +71,16 @@ case "$ARCH" in
         SOURCES="
             coreinit/coreinit.c
             coreinit/serial_aarch64.c
+            coreinit/topology_aarch64.c
+            lib/fdt.c
             coreinit/mutex_mgr.c
             coreinit/mem_mgr.c
             coreinit/scheduler.c
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
             coreinit/pagefault.c
-            coreinit/job_memory.c
-            coreinit/job_exec.c
+              coreinit/job_memory.c
+              coreinit/job_exec.c
         "
         ASM_SOURCES=""
         LD_ARCH=arm64
@@ -92,7 +94,7 @@ case "$ARCH" in
         echo "  - coreinit/lapic_timer_aarch64.c (generic timer)" >&2
         echo "  - coreinit/ap_trampoline_aarch64.S (secondary core boot)" >&2
         echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
-        echo "Currently available: serial_aarch64.c (PL011 UART)" >&2
+        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT)" >&2
         exit 1
         ;;
     *)
@@ -111,13 +113,16 @@ for src in $SOURCES; do
         arch_mmu_x86_64)
             obj="$BUILD/coreinit_arch_mmu.o"
             ;;
-        serial_x86_64)
+        serial_x86_64|serial_aarch64)
             obj="$BUILD/coreinit_serial.o"
             ;;
-        irq_x86_64)
+        topology_x86_64|topology_aarch64)
+            obj="$BUILD/coreinit_topology.o"
+            ;;
+          irq_x86_64)
             obj="$BUILD/coreinit_irq.o"
             ;;
-          smp_x86_64)
+            smp_x86_64)
             obj="$BUILD/coreinit_smp.o"
             ;;
         lapic_timer_x86_64)
@@ -134,6 +139,9 @@ for src in $SOURCES; do
             ;;
         coreinit)
             obj="$BUILD/coreinit_main.o"
+            ;;
+          fdt)
+            obj="$BUILD/lib_fdt.o"
             ;;
         *)
             obj="$BUILD/coreinit_${base}.o"
