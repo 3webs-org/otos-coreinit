@@ -3,6 +3,7 @@
 #include "schema.h"
 #include "serial.h"
 #include "try_lock.h"
+#include "arch_cpu.h"
 #include "../include/smp_layout.h"
 
 #define MAX_CLAIMS 64
@@ -25,8 +26,9 @@ static trylock_t g_lock;
 /* alloc_locked/claim_locked/free_locked are genuine multi-step
  * operations (scan for overlaps, then insert; or a first-fit search
  * across every existing claim) -- not reducible to a single atomic op
- * the way a plain counter bump is. Retries via hlt, not a spin: these
- * calls are rare (allocation events, not a per-tick hot path) and hlt
+ * the way a plain counter bump is. Retries via
+ * arch_cpu_wait_for_interrupt, not a spin: these
+ * calls are rare (allocation events, not a per-tick hot path) and it
  * actually stops the core until the next interrupt rather than
  * burning cycles polling a flag. No job context here to job_exec_wait
  * on instead -- this runs as a plain synchronous kernel_invoke
@@ -35,7 +37,7 @@ static trylock_t g_lock;
 static void mem_lock_acquire_wait(void)
 {
     while (!trylock_try_acquire(&g_lock)) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 

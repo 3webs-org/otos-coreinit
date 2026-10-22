@@ -2,6 +2,7 @@
 #include "capnp_build.h"
 #include "cluster_scheduler.h"
 #include "serial.h"
+#include "arch_cpu.h"
 
 /* Method IDs on the cluster scheduler object -- must match
  * cluster_scheduler.c's own METHOD_* defines exactly; duplicated here
@@ -265,14 +266,14 @@ void scheduler_run(void)
         if (!g_invoke(g_cluster_scheduler, CS_METHOD_GET_NEXT_JOB, self_req,
                      self_req_len, resp, sizeof(resp), &resp_len) ||
             resp_len < 48) {
-            __asm__ volatile("hlt");
+            arch_cpu_wait_for_interrupt();
             continue;
         }
 
         const uint64_t *out = capnp_read_flat(resp);
         uint64_t found = out[0];
         if (!found) {
-            __asm__ volatile("hlt");
+            arch_cpu_wait_for_interrupt();
             continue;
         }
 

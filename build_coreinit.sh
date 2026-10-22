@@ -54,11 +54,12 @@ case "$ARCH" in
             coreinit/scheduler.c
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
-            coreinit/pagefault.c
+            coreinit/pagefault_x86_64.c
             coreinit/job_memory.c
             coreinit/job_exec.c
             coreinit/cross_core_signal_x86_64.c
             coreinit/arch_mmu_x86_64.c
+            coreinit/arch_cpu_x86_64.c
         "
         ASM_SOURCES="coreinit/ap_trampoline_x86_64.S coreinit/job_exec_switch_x86_64.S"
         LD_ARCH=x86_64
@@ -80,9 +81,9 @@ case "$ARCH" in
             coreinit/scheduler.c
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
-            coreinit/pagefault.c
               coreinit/job_memory.c
               coreinit/job_exec.c
+              coreinit/arch_cpu_aarch64.c
         "
         ASM_SOURCES=""
         LD_ARCH=arm64
@@ -94,7 +95,7 @@ case "$ARCH" in
         echo "  - coreinit/cross_core_signal_aarch64.c (SGI)" >&2
         echo "  - coreinit/ap_trampoline_aarch64.S (secondary core boot)" >&2
         echo "  - coreinit/job_exec_switch_aarch64.S (context switch)" >&2
-        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer)" >&2
+        echo "Currently available: serial_aarch64.c (PL011), topology_aarch64.c (FDT), irq_aarch64.c (GICv3), timer_aarch64.c (generic timer), arch_cpu_aarch64.c (WFI)" >&2
         exit 1
         ;;
     *)
@@ -112,6 +113,12 @@ for src in $SOURCES; do
             ;;
         arch_mmu_x86_64)
             obj="$BUILD/coreinit_arch_mmu.o"
+            ;;
+        pagefault_x86_64)
+            obj="$BUILD/coreinit_pagefault.o"
+            ;;
+        arch_cpu_x86_64|arch_cpu_aarch64)
+            obj="$BUILD/coreinit_arch_cpu.o"
             ;;
         serial_x86_64|serial_aarch64)
             obj="$BUILD/coreinit_serial.o"
@@ -196,7 +203,8 @@ done
     "$BUILD/coreinit_cluster_scheduler.o" "$BUILD/coreinit_proxy.o" \
     "$BUILD/coreinit_pagefault.o" "$BUILD/coreinit_job_memory.o" \
     "$BUILD/coreinit_job_exec.o" "$BUILD/coreinit_job_exec_switch.o" \
-    "$BUILD/coreinit_cross_core_signal.o" "$BUILD/coreinit_arch_mmu.o"
+    "$BUILD/coreinit_cross_core_signal.o" "$BUILD/coreinit_arch_mmu.o" \
+    "$BUILD/coreinit_arch_cpu.o"
 
 echo "built $BUILD/coreinit.macho"
 file "$BUILD/coreinit.macho"

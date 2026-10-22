@@ -27,6 +27,7 @@
 #include "cross_core_signal.h"
 #include "irq.h"
 #include "timer.h"
+#include "arch_cpu.h"
 #include "job_memory.h"
 #include "job_exec.h"
 #include "mem_mgr.h"
@@ -190,7 +191,7 @@ static void job_exec_test_a(uint64_t arg)
             "driver\n");
     job_exec_switch(&g_test_job_a_rsp, g_test_driver_rsp);
     for (;;) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -204,7 +205,7 @@ static void job_exec_test_b(uint64_t arg)
     }
     kprintf("[coreinit]   job_exec test: B done\n");
     for (;;) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -281,7 +282,7 @@ static void job_exec_priority_test_high(uint64_t arg)
                                         * this; just gets HIGH out of
                                         * the way once it's done */
     for (;;) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -291,7 +292,7 @@ static void job_exec_priority_test_med(uint64_t arg)
     record_test_event(EVT_MED_RAN);
     job_exec_wait(&g_test_med_done_q); /* park forever */
     for (;;) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -306,7 +307,7 @@ static void job_exec_priority_test_low(uint64_t arg)
     record_test_event(EVT_LOW_BACKGROUND);
     job_exec_switch(job_exec_current_rsp_slot(), g_priority_test_driver_rsp);
     for (;;) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -500,8 +501,8 @@ static void hw_mutex_lock(void)
     size_t req_len = capnp_build_flat(req, sizeof(req), &g_hw_mutex_id, 1);
     /* METHOD_LOCK is try-only (see mutex_mgr.c) -- it never blocks
      * inside the handler, so contention is handled HERE, by actually
-     * yielding the core (hlt, woken by the next interrupt) between
-     * attempts rather than spinning. */
+     * yielding the core (arch_cpu_wait_for_interrupt, woken by the
+     * next interrupt) between attempts rather than spinning. */
     for (;;) {
         uint8_t resp[24];
         size_t resp_len = 0;
@@ -510,7 +511,7 @@ static void hw_mutex_lock(void)
             resp_len >= 8 && capnp_read_flat(resp)[0] != 0) {
             return; /* acquired */
         }
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -619,12 +620,13 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
      * guessing at how many iterations that takes (a fixed busy-count
      * here previously left the interrupt to arrive LATER, during
      * unrelated code, which is a real hardware-level bug in its own
-     * right -- see smp.c's lapic_wait_icr_idle). hlt actually stops
-     * the core until the next interrupt; bounded so a genuinely broken
+     * right -- see smp.c's lapic_wait_icr_idle). Waiting via
+     * arch_cpu_wait_for_interrupt actually stops the core until the next
+     * interrupt; bounded so a genuinely broken
      * signal path reports FAIL instead of hanging boot forever. */
     for (int spins = 0; spins < 1000 && !g_cross_core_signal_test_seen;
         spins++) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
     job_kprintf(self_job_id, "[coreinit]   cross_core_signal: self-test %s\n",
                g_cross_core_signal_test_seen ? "PASS" : "FAIL");

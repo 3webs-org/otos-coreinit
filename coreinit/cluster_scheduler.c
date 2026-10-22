@@ -4,6 +4,7 @@
 #include "scheduler.h"
 #include "serial.h"
 #include "try_lock.h"
+#include "arch_cpu.h"
 #include "../include/smp_layout.h"
 
 #define MAX_NODES 16
@@ -185,8 +186,9 @@ static trylock_t g_storage_lock;
  * job's data, then go on reading/writing through that pointer) that
  * still need real exclusivity -- see job_data_for_handle_locked's own
  * note on why a stale pointer into a destroyed-and-reused slot is a
- * real bug, not just a stale scheduling hint. This retries via hlt,
- * not a spin: hlt actually stops the core until the next interrupt,
+ * real bug, not just a stale scheduling hint. This retries via
+ * arch_cpu_wait_for_interrupt, not a spin: it actually stops the core
+ * until the next interrupt,
  * rather than burning cycles reading a flag in a loop, and these
  * sections are short and rare enough that "wait for an interrupt, try
  * again" is a perfectly good fit -- there's no job context here to
@@ -195,7 +197,7 @@ static trylock_t g_storage_lock;
 static void storage_lock_acquire_wait(void)
 {
     while (!trylock_try_acquire(&g_storage_lock)) {
-        __asm__ volatile("hlt");
+        arch_cpu_wait_for_interrupt();
     }
 }
 
@@ -1577,7 +1579,7 @@ static void pick_next_for_node(uint64_t requesting_node_id,
          * available -- report nothing found THIS round rather than
          * rescanning (which would risk becoming an unbounded retry
          * loop); the requesting node's own GET_NEXT_JOB caller already
-         * treats "not found" as hlt-and-retry, so it tries again on
+         * treats "not found" as wait-and-retry, so it tries again on
          * its own, no spinning needed here either. */
         if (!__sync_bool_compare_and_swap(&chosen_j->dispatched, 0, 1)) {
             *out_job = (capability_t){0};

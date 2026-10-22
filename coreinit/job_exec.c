@@ -1,4 +1,5 @@
 #include "job_exec.h"
+#include "arch_cpu.h"
 
 static uint8_t g_job_stacks[JOB_EXEC_MAX_RESIDENT][JOB_EXEC_STACK_SIZE]
     __attribute__((aligned(16)));
@@ -113,7 +114,7 @@ void job_exec_wait(job_wait_queue_t *q)
          * yet to fall back to; this is a genuine "nothing left to run"
          * condition, not something to paper over. */
         for (;;) {
-            __asm__ volatile("hlt");
+            arch_cpu_wait_for_interrupt();
         }
     }
     int next_idx = (int)(next - g_job_table);
