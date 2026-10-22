@@ -70,6 +70,7 @@ case "$ARCH" in
         "
         ASM_SOURCES="coreinit/ap_trampoline_x86_64.S coreinit/job_exec_switch_x86_64.S"
         LD_ARCH=x86_64
+        PAGEZERO=0x1800000
         # The AP trampoline object is deliberately NOT listed here: ld64
         # cannot link its 16-bit real-mode relocations, and smp_x86_64.c
         # consumes the pre-generated flat binary in
@@ -107,6 +108,12 @@ case "$ARCH" in
         "
         ASM_SOURCES="coreinit/job_exec_switch_aarch64.S"
         LD_ARCH=arm64
+        # 0x40200000 is 2 MiB into QEMU virt's RAM (base 0x40000000) --
+        # the x86 convention's 24 MiB is below virt's RAM base and would
+        # be an unloadable image. coreinit still declares its own load
+        # address and the kernel honors it via target_base=0 (same
+        # convention, only the number changes).
+        PAGEZERO=0x40200000
         # The FDT object belongs here rather than on the shared link
         # line: lib/fdt.c is only in this arch's SOURCES, so the object
         # doesn't exist for an x86_64 build. No trampoline object either
@@ -218,7 +225,7 @@ done
 # -- externally supplied, not self-decided, which is exactly the
 # distinction this principle is about.
 "$LD64" -arch "$LD_ARCH" -platform_version macos 10.12 10.12 \
-    -e _coreinit_main -pagezero_size 0x1800000 \
+    -e _coreinit_main -pagezero_size "$PAGEZERO" \
     -o "$BUILD/coreinit.macho" \
     "$BUILD/coreinit_main.o" "$BUILD/coreinit_serial.o" "$BUILD/coreinit_pci.o" \
     "$BUILD/coreinit_ata.o" "$BUILD/coreinit_irq.o" "$BUILD/coreinit_topology.o" \

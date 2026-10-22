@@ -5,6 +5,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Backend wiring entry points. None is declared in a header -- each
+ * backend's own file documents why -- so the topology backend (the
+ * wiring point for this architecture) forward-declares them here. */
+void serial_aarch64_set_base(uint64_t base);
+void irq_aarch64_set_base(uint64_t base);
+void cross_core_signal_aarch64_set_base(void *base);
+
 /* Read MPIDR_EL1 (Multiprocessor Affinity Register) to get this core's
  * own affinity identifier. This is the aarch64 equivalent of reading the
  * LAPIC ID on x86_64 -- a hardware register that uniquely identifies this
@@ -197,6 +204,30 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
             kprintf("[coreinit]   topology: timer frequency %llu Hz\n",
                    (unsigned long long)out->arch_opaque[2]);
         }
+    }
+
+    /* The topology backend wires its own architecture's backends -- the
+     * shared flow stays neutral, same principle as the build script's
+     * per-arch file lists. Each nonzero base is handed to the backend
+     * that owns it; the GIC distributor feeds BOTH the IRQ backend and
+     * the SGI signaling backend. irq_core_init's existing
+     * NULL-tolerance means a missing GIC in the DT degrades gracefully:
+     * no wiring happens, and the IRQ backend keeps its no-op behavior
+     * instead of faulting. */
+    if (out->arch_opaque[0] != 0) {
+        serial_aarch64_set_base(out->arch_opaque[0]);
+        kprintf("[coreinit]   topology: serial backend wired to UART at 0x%llX\n",
+                (unsigned long long)out->arch_opaque[0]);
+    }
+    if (out->arch_opaque[1] != 0) {
+        irq_aarch64_set_base(out->arch_opaque[1]);
+        kprintf("[coreinit]   topology: irq backend wired to GICD at 0x%llX\n",
+                (unsigned long long)out->arch_opaque[1]);
+        cross_core_signal_aarch64_set_base(
+            (void *)(uintptr_t)out->arch_opaque[1]);
+        kprintf("[coreinit]   topology: cross-core-signal backend wired to "
+                "GICD at 0x%llX\n",
+                (unsigned long long)out->arch_opaque[1]);
     }
 
     return (out->count > 0) ? 1 : 0;
