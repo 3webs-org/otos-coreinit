@@ -5,11 +5,23 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD"
 
-export PATH="/usr/lib/llvm-18/bin:$PATH"
+# Toolchain paths: overridable for macOS/Nix or other non-Debian environments
+LLVM_BIN=${LLVM_BIN:-/usr/lib/llvm-18/bin}
+export PATH="$LLVM_BIN:$PATH"
 
-CC=clang-18
+CC=${CC:-clang-18}
+LD64=${LD64:-ld64.lld}
+
+# Contract headers from the kernel repo
+SASKI_ROOT=${SASKI_ROOT:-$ROOT/../saski}
+if [ ! -d "$SASKI_ROOT/kernel" ]; then
+    echo "ERROR: SASKI_ROOT/kernel not found at $SASKI_ROOT/kernel" >&2
+    echo "Set SASKI_ROOT to the saski repository root (contains kernel/ with cap.h, schema.h, capnp.h)" >&2
+    exit 1
+fi
+
 TARGET=x86_64-apple-darwin
-CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -mno-red-zone -mno-sse -mno-mmx -Wall -Wextra -I$ROOT/coreinit -I$ROOT/kernel -I$ROOT/include -O1 -g"
+CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -mno-red-zone -mno-sse -mno-mmx -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
 
 "$CC" $CFLAGS -c "$ROOT/coreinit/coreinit.c" -o "$BUILD/coreinit_main.o"
 "$CC" $CFLAGS -c "$ROOT/coreinit/serial.c" -o "$BUILD/coreinit_serial.o"
@@ -48,7 +60,7 @@ CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -mno-red-zo
 # own smp_bring_up_all, via the AP trampoline's region_base parameter)
 # -- externally supplied, not self-decided, which is exactly the
 # distinction this principle is about.
-ld64.lld -arch x86_64 -platform_version macos 10.12 10.12 \
+"$LD64" -arch x86_64 -platform_version macos 10.12 10.12 \
     -e _coreinit_main -pagezero_size 0x1800000 \
     -o "$BUILD/coreinit.macho" \
     "$BUILD/coreinit_main.o" "$BUILD/coreinit_serial.o" "$BUILD/coreinit_pci.o" \
