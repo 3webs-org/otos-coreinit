@@ -69,20 +69,34 @@ typedef struct {
 int topology_discover(topology_t *out, uint64_t arch_hint);
 
 /* The machine-description hint topology_discover wants, extracted from the
- * kernel's own boot handoff. This is what makes two different boot
- * conventions meet ONE neutral call site: each platform describes the
- * machine in its own container, and each arch's own backend knows which
- * field of init_boot_info carries it.
+ * kernel's own boot handoff.
  *
- *   x86_64: early_rsdp_phys -- the machine is described by ACPI, reached
- *           through the RSDP the kernel found via the EFI config table.
- *   aarch64: fdt_blob_phys -- the machine is described by a device tree,
- *           captured from x0 at kernel entry per the arm64 boot protocol.
+ * THE ARCHITECTURAL POINT, and the reason this function exists rather than
+ * each caller reading init_boot_info directly:
  *
- * Calling topology_discover directly with a hand-picked field is the error
- * this exists to prevent: both fields are opaque uint64_t physical
- * addresses, so handing an RSDP to an FDT parser (or the reverse) is a
- * mistake the C compiler cannot catch. It is caught here instead. */
+ * The boot CONVENTION is uniform across every standard platform. One
+ * kernel binary carries every standard port, and every one of them is
+ * entered the same way -- the kernel builds one init_boot_info and hands
+ * it to init. That uniformity is the whole reason this boot protocol was
+ * chosen: the handoff shape does not change per port, so neither the
+ * kernel's handoff code nor init's entry code needs a per-platform
+ * variant. Embedded targets are the acknowledged exception, where that
+ * convention is not available and a platform-specific entry is expected.
+ *
+ * What DOES differ per port is the machine description sitting inside that
+ * uniform handoff. Two fields carry it, deliberately never one:
+ *
+ *   x86_64: early_rsdp_phys -- ACPI, reached via the EFI config table.
+ *   aarch64: fdt_blob_phys -- a flattened device tree.
+ *
+ * They are separate because they carry different formats read by
+ * different code, and a single overloaded "arch hint" field would invite
+ * treating one as the other. Both are opaque uint64_t physical
+ * addresses, so picking the wrong one is invisible to the compiler --
+ * passing an RSDP to an FDT parser fails at runtime, in the topology
+ * backend, far from the line that made the mistake. Choosing here, in
+ * exactly one place per architecture, is what turns that silent runtime
+ * error into a one-line reviewable decision. */
 uint64_t topology_boot_hint(const struct init_boot_info *info);
 
 /* Returns this core's own identifier in the same namespace topology_discover

@@ -257,12 +257,27 @@ uint64_t topology_cluster_arch(void)
 
 uint64_t topology_boot_hint(const struct init_boot_info *info)
 {
-    /* aarch64's machine description is the device tree, not ACPI. The
-     * kernel captured it from x0 at entry (see arch/boot_aarch64.S, which
-     * stores it before anything else can clobber it) and validated it, so
-     * this hands that address on. Deliberately NOT early_rsdp_phys: both
-     * are opaque physical addresses typed uint64_t, which is exactly why
-     * the choice lives here, in the architecture backend, rather than at
-     * the neutral call site where the two could be silently swapped. */
+    /* aarch64's machine description is a device tree, not ACPI. The kernel
+     * captured the DTB address at entry and validated it, so this hands
+     * that address on.
+     *
+     * Deliberately NOT early_rsdp_phys: both are opaque physical addresses
+     * typed uint64_t, which is exactly why the choice lives here, in the
+     * architecture backend, rather than at the neutral call site where the
+     * two could be silently swapped and fail only later, inside the FDT
+     * parser.
+     *
+     * NOTE ON CONVENTION, recorded where the ARM side actually diverges:
+     * the DTB arriving in x0 is the EMBEDDED entry convention. Every
+     * standard platform is supposed to be entered through the same
+     * XNU-style handoff that produces init_boot_info, so that one kernel
+     * binary serves every standard port with one bootup convention --
+     * that uniformity is why the convention was chosen. The aarch64 boot
+     * stub currently takes the embedded path on a standard platform
+     * (QEMU virt), which is a gap in the kernel's ARM port, not a
+     * deliberate design: today fdt_blob_phys is populated only because
+     * the stub captured x0 directly. When the ARM port grows the
+     * XNU-style entry (EFI stub -> handoff -> interrupt), this function
+     * keeps its one-line body and only the producer changes. */
     return info->fdt_blob_phys;
 }
