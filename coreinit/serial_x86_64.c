@@ -82,8 +82,8 @@ static void put_int(long v)
     }
 }
 
-/* Minimal freestanding formatter: %s %d %u %x %X %c %% only. Enough for
- * kernel/coreinit bring-up logging; not a general libc printf. */
+/* Minimal freestanding formatter: %s %d %u %x %X %c %p, their ll
+ * integer forms, and %%. Not a general libc printf. */
 void kvprintf(const char *fmt, va_list ap)
 {
     if (g_core_tag >= 0) {
@@ -102,6 +102,22 @@ void kvprintf(const char *fmt, va_list ap)
             continue;
         }
         p++;
+        if (*p == 'l' && p[1] == 'l') {
+            p += 2;
+            if (*p == 'u') {
+                put_uint(va_arg(ap, unsigned long long), 10, 0);
+            } else if (*p == 'x' || *p == 'X') {
+                put_uint(va_arg(ap, unsigned long long), 16, *p == 'X');
+            } else if (*p == 'd') {
+                put_int(va_arg(ap, long long));
+            } else {
+                putc('%');
+                putc('l');
+                putc('l');
+                putc(*p);
+            }
+            continue;
+        }
         switch (*p) {
         case 's':
             puts_raw(va_arg(ap, const char *));
@@ -120,6 +136,11 @@ void kvprintf(const char *fmt, va_list ap)
             break;
         case 'c':
             putc((char)va_arg(ap, int));
+            break;
+        case 'p':
+            putc('0');
+            putc('x');
+            put_uint((unsigned long)(uintptr_t)va_arg(ap, void *), 16, 0);
             break;
         case '%':
             putc('%');
