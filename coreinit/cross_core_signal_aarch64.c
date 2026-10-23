@@ -80,37 +80,14 @@ void cross_core_signal_send(uint64_t target)
         return;
     }
 
-    /* ICC_SGI1R_EL1, field by field (the x86_64 backend comments its two
-     * ICR writes the same way -- this is that register's equivalent):
-     *
-     *   [63:48] Aff3 -- the target's affinity level 3.
-     *   [47:44] RS   -- 0: range not extended, so the Aff1/Aff2 fields
-     *                   below select the targets instead of a
-     *                   redistributor range.
-     *   [47:40] Aff2 -- the target's affinity level 2 (the chip).
-     *   [39:32] Aff1 -- the target's affinity level 1 (the cluster).
-     *   [27]    IRM  -- 0: interprocessor mode is a broadcast to every
-     *                   PE, which is not what "signal THIS core" means.
-     *                   Leaving it 0 keeps this a targeted send.
-     *   [25:24] INTID-- the SGI number; ID 0 is all zeros, so no bits.
-     *   [23:16] TargetList -- one bit per PE within the addressed
-     *                   cluster, bit i meaning "the PE whose Aff0 is
-     *                   (Aff0 field)+i". With the Aff0 field left at 0,
-     *                   that is simply bit (Aff0 & 7).
-     *   [3:0]   Aff0 -- 0 here: the TargetList is what selects the core,
-     *                   so the base Aff0 stays zero.
-     *
-     * Honest limitation: QEMU virt's 4 cores are a single cluster, so
-     * Aff1/Aff2/Aff3 are all 0 and only the TargetList byte ever carries
-     * information. Targeting more than 8 cores per cluster, or a second
-     * cluster, needs the Aff0 base field plus a shifted TargetList (and
-     * the extended RS range) -- a documented future extension, not
-     * something this silently gets wrong today. */
-    uint64_t sgi1r = 0;
-    sgi1r |= (aff3 & 0xFull) << 48;
-    sgi1r |= (aff2 & 0xFFull) << 40;
-    sgi1r |= (aff1 & 0xFFull) << 32;
-    sgi1r |= (1ull << (aff0 & 7ull)) << 16;
+    /* ICC_SGI1R_EL1: Aff3[55:48], Aff2[39:32], Aff1[23:16], and
+     * TargetList[15:0] for Aff0. SGI 0 is INTID=0. RS stays zero, so
+     * this backend only targets Aff0 0..15; never alias a higher target. */
+    if (aff0 >= 16) {
+        return;
+    }
+    uint64_t sgi1r = (aff3 << 48) | (aff2 << 32) | (aff1 << 16) |
+                     (1ull << aff0);
     __asm__ volatile("msr icc_sgi1r_el1, %0" :: "r"(sgi1r));
 }
 
@@ -120,17 +97,17 @@ void cross_core_signal_install_handler(void (*handler)(void))
      * acknowledges SGI 0 and invokes this handler before EOI. */
     irq_install_handler(CROSS_CORE_SIGNAL_SGI, (void *)handler);
 
-    /* Enable SGI 0 in the distributor if the base is known. ISENABLER is
-     * set-once, 32 interrupts per register, and SGI 0 is bit 0 of the
-     * first register at 0x0100. */
-    if (g_gicd_base) {
+    /* GICv2 enables SGI 0 in the distributor. On GICv3 the handler
+     * registration above already enabled it in this core's redistributor. */
+    if (g_gic_v2 && g_gicd_base) {
         mmio_write32((volatile void *)(g_gicd_base + GICD_ISENABLER),
                      1u << CROSS_CORE_SIGNAL_SGI);
         kprintf("[coreinit]   cross_core_signal: SGI %d enabled in GIC distributor\n",
                 CROSS_CORE_SIGNAL_SGI);
+    } else if (!g_gic_v2) {
+        kprintf("[coreinit]   cross_core_signal: SGI %d enabled in GICR\n",
+                CROSS_CORE_SIGNAL_SGI);
     } else {
-        /* Same NULL-tolerance as gic_distributor_init(): report and
-         * return, and let whoever sets the base enable it later. */
         kprintf("[coreinit]   cross_core_signal: GIC distributor base not set, "
                 "SGI %d will be enabled when it is\n", CROSS_CORE_SIGNAL_SGI);
     }

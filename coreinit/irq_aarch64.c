@@ -20,6 +20,14 @@
 #define GICC_PMR            0x04
 #define GICC_IAR            0x0c
 #define GICC_EOIR           0x10
+#define GICR_TYPER          0x0008
+#define GICR_WAKER          0x0014
+#define GICR_SGI_BASE       0x10000
+#define GICR_IGROUPR0       (GICR_SGI_BASE + 0x80)
+#define GICR_ISENABLER0     (GICR_SGI_BASE + 0x100)
+#define GICR_ICENABLER0     (GICR_SGI_BASE + 0x180)
+#define GICR_IPRIORITYR     (GICR_SGI_BASE + 0x400)
+#define GICR_FRAME_SIZE     0x20000
 
 /* GICD_CTLR bits */
 #define GICD_CTLR_ENABLEGRP0    (1U << 0)  /* Enable Group 0 interrupts */
@@ -55,6 +63,9 @@ static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
  * dereference. This mirrors the design in serial_aarch64.c. */
 static volatile uint8_t *g_gicd_base = NULL;
 static volatile uint8_t *g_gicc_base = NULL;
+static volatile uint8_t *g_gicr_region = NULL;
+static uint64_t g_gicr_region_size = 0;
+static volatile uint8_t *g_gicr_base = NULL;
 
 /* Physical timer (PPI 14) is INTID 30. */
 #define ARM_TIMER_IRQ 30
@@ -136,8 +147,8 @@ static void gic_cpu_interface_init(void)
          * Undefined Instruction exception. */
         mmio_write32((volatile void *)(g_gicc_base + GICC_PMR), 0xff);
         /* Enable Group 0 and Group 1. AckCtl (bit 2) lets IAR read both:
-                 * without it QEMU reports 1022 for every Group 1 IRQ. */
-                mmio_write32((volatile void *)(g_gicc_base + GICC_CTLR), 7);
+         * without it QEMU reports 1022 for every Group 1 IRQ. */
+        mmio_write32((volatile void *)(g_gicc_base + GICC_CTLR), 7);
         kprintf("[coreinit]   irq: GICv2 CPU interface initialized\n");
         return;
     }
@@ -270,6 +281,57 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
     __asm__ volatile("msr vbar_el1, %0\n\tisb" ::
                      "r"((uintptr_t)irq_aarch64_vectors) : "memory");
     gic_distributor_init();
+    if (!g_gicc_base) {
+        /* GICv3 routes SGIs and PPIs through the redistributor of this
+         * affinity, not the shared distributor. Fail closed if firmware
+         * supplied no usable GICR region. */
+        uint64_t mpidr;
+        __asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+        uint32_t affinity = ((uint32_t)(mpidr >> 32) & 0xffu) << 24 |
+                            ((uint32_t)mpidr & 0xffffffu);
+        g_gicr_base = NULL;
+        for (uint64_t off = 0; g_gicr_region &&
+             off + GICR_FRAME_SIZE <= g_gicr_region_size;
+             off += GICR_FRAME_SIZE) {
+            volatile uint8_t *frame = g_gicr_region + off;
+            uint64_t typer = mmio_read64((const volatile void *)(frame + GICR_TYPER));
+            if ((uint32_t)(typer >> 32) == affinity) {
+                g_gicr_base = frame;
+                break;
+            }
+            if (typer & (1ull << 4)) {
+                break; /* Last redistributor in this contiguous region. */
+            }
+        }
+        if (!g_gicr_base) {
+            kprintf("[coreinit] irq_core_init: GICv3 redistributor not found "
+                    "for affinity 0x%x; IRQs remain masked\n", affinity);
+            return;
+        }
+        uint32_t waker = mmio_read32((const volatile void *)(g_gicr_base + GICR_WAKER));
+        mmio_write32((volatile void *)(g_gicr_base + GICR_WAKER),
+                     waker & ~(1u << 1)); /* ProcessorSleep = 0 */
+        int ready = 0;
+        for (unsigned i = 0; i < 1000000; i++) {
+            if (!(mmio_read32((const volatile void *)(g_gicr_base + GICR_WAKER)) &
+                  (1u << 2))) { /* ChildrenAsleep = 0 */
+                ready = 1;
+                break;
+            }
+        }
+        if (!ready) {
+            kprintf("[coreinit] irq_core_init: GICv3 redistributor did not wake\n");
+            return;
+        }
+        mmio_write32((volatile void *)(g_gicr_base + GICR_ICENABLER0),
+                     0xffffffffu);
+        mmio_write32((volatile void *)(g_gicr_base + GICR_IGROUPR0),
+                     0xffffffffu);
+        for (int i = 0; i < 8; i++) {
+            mmio_write32((volatile void *)(g_gicr_base + GICR_IPRIORITYR + i * 4),
+                         0x80808080u);
+        }
+    }
     gic_cpu_interface_init();
     __asm__ volatile("msr daifclr, #2" ::: "memory");
     kprintf("[coreinit] irq_core_init: EL1 vectors and GIC initialized; "
@@ -289,10 +351,14 @@ void irq_install_handler(int vector, void *handler_addr)
      * acknowledging its GIC interrupt ID. */
     g_irq_handlers[vector] = handler_addr;
 
-    /* If the GIC is configured, enable this interrupt in the distributor.
-     * ISENABLER is a set-enable register (write 1 to enable, write 0 is
-     * ignored), with 32 interrupts per 32-bit register. */
-    if (g_gicd_base) {
+    /* SGIs/PPIs (<32) are per-core redistributor registers on GICv3;
+     * GICv2 uses the distributor's bank 0. SPIs (>=32) use GICD on both. */
+    if (g_gicr_base && vector < 32) {
+        mmio_write32((volatile void *)(g_gicr_base + GICR_ISENABLER0),
+                     1u << vector);
+        kprintf("[coreinit]   irq: installed handler for vector %d at %p, "
+                "enabled in GICR\n", vector, handler_addr);
+    } else if (g_gicd_base) {
         uint32_t reg_offset = GICD_ISENABLER + (vector / 32) * 4;
         uint32_t bit = 1U << (vector % 32);
         mmio_write32((volatile void *)(g_gicd_base + reg_offset), bit);
@@ -326,6 +392,12 @@ void irq_aarch64_set_base(uint64_t base)
 void irq_aarch64_set_cpu_base(uint64_t base)
 {
     g_gicc_base = (volatile uint8_t *)(uintptr_t)base;
+}
+
+void irq_aarch64_set_redistributor_region(uint64_t base, uint64_t size)
+{
+    g_gicr_region = (volatile uint8_t *)(uintptr_t)base;
+    g_gicr_region_size = size;
 }
 
 /* The irq_manager object's handler and schema. This is the object-model

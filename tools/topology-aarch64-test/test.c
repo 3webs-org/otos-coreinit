@@ -1,10 +1,8 @@
-/* Host test for topology_aarch64.c's ACPI branch, run against the real
- * tables AAVMF publishes on QEMU virt (-smp 4), dumped from guest memory
- * 0x5F0B0000 (one page: RSDP at +0x18, XSDT, MADT, SPCR, ...). The dump's
- * physical pointers are rebased onto wherever the page is mapped here and
- * the two affected checksums recomputed; the tables themselves are
- * untouched. Expect 4 enabled cores (MPIDR 0..3), GICD 0x8000000, PL011
- * 0x9000000, backends wired, no DTB recorded. */
+/* Host test for topology_aarch64.c's ACPI branch against AAVMF tables
+ * dumped from QEMU virt (-smp 4, GICv2 and GICv3). The one-page fixtures
+ * cover RSDP at +0x18, XSDT, MADT, FADT and SPCR. Rebase the XSDT pointers
+ * and recompute their checksums, then vary FADT PSCI flags and recompute
+ * its checksum. Expect four cores, GICD, GICC or GICR, and PL011. */
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -12,8 +10,8 @@
 #include <string.h>
 #include "coreinit/topology.h"
 void kprintf(const char *f, ...){va_list a;va_start(a,f);vprintf(f,a);va_end(a);}
-uint64_t gs, gi, gicc; void *gc;
-void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void irq_aarch64_set_cpu_base(uint64_t b){gicc=b;} void cross_core_signal_aarch64_set_base(void*b){gc=b;} void cross_core_signal_aarch64_set_gic_v2(void){}
+uint64_t gs, gi, gicc, gicr, gicr_size; void *gc;
+void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void irq_aarch64_set_cpu_base(uint64_t b){gicc=b;} void irq_aarch64_set_redistributor_region(uint64_t b,uint64_t n){gicr=b;gicr_size=n;} void cross_core_signal_aarch64_set_base(void*b){gc=b;} void cross_core_signal_aarch64_set_gic_v2(void){}
 int fdt_valid(const void*b,uint64_t s){return 0;}
 int main(int argc,char**argv){
   uint8_t *p=mmap(0,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
@@ -26,7 +24,9 @@ int main(int argc,char**argv){
   FIX(xs,l,9); FIX(r,36,32);
   struct init_boot_info bi={0}; bi.early_rsdp_phys=(uint64_t)r;
   static topology_t t; int ok=topology_discover(&t, topology_boot_hint(&bi));
-  int good = ok && t.count==4 && t.cores[3].target==3 && t.cores[0].enabled && gs==0x9000000 && gi==0x8000000 && gicc==0x8010000 && gc==(void*)0x8000000 && t.arch_opaque[3]==0;
+  int v3=argc>2 && argv[2][0]=='3';
+  int good = ok && t.count==4 && t.cores[3].target==3 && t.cores[0].enabled && gs==0x9000000 && gi==0x8000000 && gc==(void*)0x8000000 && t.arch_opaque[3]==0;
+  good &= v3 ? (gicr==0x80a0000 && gicr_size>=0x80000 && !gicc) : (gicc==0x8010000 && !gicr);
   int use_hvc = -1;
   good &= topology_aarch64_psci_method((uint64_t)r, &use_hvc) && use_hvc == 1;
   int fadt_found=0;

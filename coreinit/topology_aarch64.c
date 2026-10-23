@@ -11,6 +11,7 @@
 void serial_aarch64_set_base(uint64_t base);
 void irq_aarch64_set_base(uint64_t base);
 void irq_aarch64_set_cpu_base(uint64_t base);
+void irq_aarch64_set_redistributor_region(uint64_t base, uint64_t size);
 void cross_core_signal_aarch64_set_base(void *base);
 void cross_core_signal_aarch64_set_gic_v2(void);
 
@@ -124,6 +125,7 @@ typedef struct {
 
 #define MADT_TYPE_GICC 0x0B
 #define MADT_TYPE_GICD 0x0C
+#define MADT_TYPE_GICR 0x0E
 #define MADT_GICC_FLAG_ENABLED 0x1u
 #define SPCR_TYPE_PL011 0x03
 
@@ -230,6 +232,7 @@ static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
 
     size_t found = 0, enabled = 0;
     uint64_t gicc_base = 0;
+    uint64_t gicr_base = 0, gicr_size = 0;
     uint8_t gic_version = 0;
     const uint8_t *p = (const uint8_t *)madt + sizeof(acpi_sdt_t) + 8;
     const uint8_t *end = (const uint8_t *)madt + madt->length;
@@ -259,6 +262,9 @@ static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
             if (len >= 21) {
                 gic_version = p[20];
             }
+        } else if (type == MADT_TYPE_GICR && len >= 16) {
+            gicr_base = le_read(p + 4, 8);
+            gicr_size = le_read(p + 12, 4);
         }
         p += len;
     }
@@ -266,6 +272,8 @@ static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
     if (gic_version == 2 && gicc_base != 0) {
         irq_aarch64_set_cpu_base(gicc_base);
         cross_core_signal_aarch64_set_gic_v2();
+    } else if (gic_version == 3 && gicr_base && gicr_size) {
+        irq_aarch64_set_redistributor_region(gicr_base, gicr_size);
     }
     kprintf("[coreinit]   topology: discovered %u cores (%u enabled)\n",
             (unsigned int)found, (unsigned int)enabled);
@@ -440,9 +448,11 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
     }
     if (gic_offset != FDT_ERR_NODE && node_enabled(blob, gic_offset)) {
         fdt_range_t gic_range;
-        if (!gic_v3) {
-            fdt_range_t cpu_range;
-            if (fdt_reg_to_cpu_addr(blob, gic_offset, 1, &cpu_range)) {
+        fdt_range_t cpu_range;
+        if (fdt_reg_to_cpu_addr(blob, gic_offset, 1, &cpu_range)) {
+            if (gic_v3) {
+                irq_aarch64_set_redistributor_region(cpu_range.base, cpu_range.size);
+            } else {
                 irq_aarch64_set_cpu_base(cpu_range.base);
                 cross_core_signal_aarch64_set_gic_v2();
             }
