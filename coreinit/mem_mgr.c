@@ -165,8 +165,10 @@ void memory_manager_init_schema(void)
      * round numbers rather than exact image sizes -- this is bookkeeping
      * to catch collisions, not a tight-fit allocator. */
     mem_lock_acquire_wait();
+#if !defined(__aarch64__)
     claim_locked(0xFEE00000, 0x1000, MEM_KIND_MMIO);        /* local APIC */
     claim_locked(0xFEC00000, 0x1000, MEM_KIND_MMIO);        /* IOAPIC */
+#endif
     /* Sized generously (4MB, matching BSP_INIT_LOAD_BASE's own
      * reservation below) rather than tightly: this kernel's own image
      * now carries coreinit's entire Mach-O embedded within it (see
@@ -175,7 +177,15 @@ void memory_manager_init_schema(void)
      * need -- this is bookkeeping to catch collisions, not a tight
      * fit, so erring generous costs nothing but address space. */
     claim_locked(KERNEL_LOAD_BASE, 0x400000, MEM_KIND_KERNEL_RESERVED); /* BSP kernel image */
-    claim_locked(0x8000, 0x1000, MEM_KIND_KERNEL_RESERVED); /* AP trampoline page */
+#if defined(__aarch64__)
+    /* This QEMU virt BSP mailbox sits in actual ARM RAM, separate from
+     * its kernel at 0x41000000 and init at 0x40200000. PSCI needs no
+     * x86 real-mode trampoline at 0x8000. */
+    claim_locked(BSP_MAILBOX_REGION_BASE + CORE_MAILBOX_OFFSET,
+                 CORE_MAILBOX_SIZE, MEM_KIND_KERNEL_RESERVED);
+#else
+    claim_locked(0x8000, 0x1000, MEM_KIND_KERNEL_RESERVED); /* AP trampoline */
+#endif
     claim_locked(BSP_INIT_LOAD_BASE, 0x400000, MEM_KIND_KERNEL_RESERVED); /* BSP
                  * coreinit's own loaded image -- see smp_layout.h's own
                  * note on why this is claimed explicitly now: a future

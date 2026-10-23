@@ -1,6 +1,14 @@
 #pragma once
 
-/* Per-core memory region layout: the one hardcoded convention init's own
+/* The __aarch64__ physical addresses in this file are QEMU virt's 512 MiB
+ * reference layout (RAM 0x40000000..0x60000000), not a general ARM ABI.
+ * The AP region's internal offsets are architecture-neutral; another ARM
+ * board, or a smaller RAM configuration, must place regions from its own
+ * discovered memory map before enabling AP boot or the allocation pool.
+ * GRUB's XNU entry convention is common across standard platforms; the
+ * physical RAM map is not.
+ *
+ * Per-core memory region layout: the one hardcoded convention init's own
  * SMP bring-up code (this project's own reference implementation,
  * coreinit/smp.c) and the kernel's kernel_boot_ap must agree on ahead
  * of time, for the same reason init_abi.h's boot handoff shape is
@@ -17,7 +25,14 @@
  * is meant to touch, and only through explicit volatile-qualified
  * accessors (see coreinit/mmio.h), never as ordinary shared C state. */
 
+/* Both ports use the same offsets within a 4 MiB AP region; only its
+ * physical base differs. QEMU virt RAM starts at 0x40000000 on ARM,
+ * whereas 0x4000000 is usable low RAM on x86. */
+#if defined(__aarch64__)
+#define CORE_REGION_BASE 0x42000000ull /* 32 MiB into QEMU virt RAM */
+#else
 #define CORE_REGION_BASE 0x4000000ull  /* 64 MiB */
+#endif
 #define CORE_REGION_SIZE 0x400000ull   /* 4 MiB per core */
 
 #define CORE_KERNEL_OFFSET 0x000000ull    /* fresh kernel image copy */
@@ -71,7 +86,11 @@
  * clears this project's own Mach-O/GRUB-xnu kernel image (loaded at
  * 16 MiB via -pagezero_size, extending to roughly 16.2 MiB) with room
  * to spare. */
+#if defined(__aarch64__)
+#define BSP_MAILBOX_REGION_BASE (0x41800000ull - CORE_MAILBOX_OFFSET)
+#else
 #define BSP_MAILBOX_REGION_BASE (0x1200000ull - CORE_MAILBOX_OFFSET)
+#endif
 
 /* Discovery record: written by the BSP's own init (this project's own
  * reference implementation's smp.c) into an AP's region before that AP
@@ -118,23 +137,13 @@
 #define CORE_DISCOVERY_SERIAL_RESOURCE_OFF 0x30ull
 #define CORE_DISCOVERY_RSDP_OFF 0x38ull
 
-#define KERNEL_LOAD_BASE 0x1000000ull /* build.sh's -pagezero_size
-                                      * 0x1000000 -- where this kernel's
-                                      * own __TEXT actually loads (see
-                                      * that flag's own comment for why:
-                                      * clear of firmware-owned low
-                                      * memory, e.g. where OVMF places
-                                      * the ACPI RSDP). Needed here too
-                                      * so kernel_boot's own
-                                      * boot_info.kernel_load_base is
-                                      * correct -- init's own SMP
-                                      * bring-up (smp.c) uses it to
-                                      * compute the delta when copying
-                                      * this running kernel image to an
-                                      * AP's own region, so a stale
-                                      * value here would silently
-                                      * corrupt every address in that
-                                      * copy. */
+/* The ARM kernel is linked at RAM + 16 MiB for the -kernel, EFI-stub,
+ * and GRUB xnu paths; x86 retains its own 16 MiB low-RAM load base. */
+#if defined(__aarch64__)
+#define KERNEL_LOAD_BASE 0x41000000ull
+#else
+#define KERNEL_LOAD_BASE 0x1000000ull
+#endif
 
 /* Where the BSP's own init is actually loaded. This is no longer
  * something the kernel decides or consults at all -- kernel_boot loads
@@ -169,7 +178,11 @@
  * here too; moving init's own load address out of its way was the
  * actual fix, same reasoning as before, just repeated once more
  * against a different collision. */
+#if defined(__aarch64__)
+#define BSP_INIT_LOAD_BASE 0x40200000ull /* 2 MiB into QEMU virt RAM */
+#else
 #define BSP_INIT_LOAD_BASE 0x1800000ull /* 24 MiB */
+#endif
 
 /* Per-core page tables: each AP gets its own independent PML4/PDPT/PD/
  * PD_hi, built fresh by kernel_boot_ap (see kernel.c's
@@ -199,5 +212,13 @@
  * gives it 4 MiB of its own headroom to grow into, same margin as
  * before); at and above CORE_REGION_BASE, each AP's own
  * formula-addressed region. */
+#if defined(__aarch64__)
+/* Max 64 AP regions occupy 0x42000000..0x52000000. Leave 32 MiB
+ * between those regions and this 64 MiB pool; keep another 128 MiB
+ * before the end of QEMU virt's standard 512 MiB RAM/EFI tables. */
+#define ALLOC_MIN 0x54000000ull
+#define ALLOC_MAX 0x58000000ull
+#else
 #define ALLOC_MIN 0x1C00000ull  /* 28 MiB */
 #define ALLOC_MAX CORE_REGION_BASE /* 64 MiB */
+#endif
