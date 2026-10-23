@@ -770,14 +770,9 @@ static job_result_t job_resource_demo(void *ctx, uint64_t self_job_id,
  * copy-on-write (present-but-read-only -> write faults -> private copy
  * -> free thereafter). This is the actual mechanism real swap uses,
  * proven here rather than asserted -- see pagefault.h for the full
- * reasoning. Deliberately standalone: it does not yet consult the
- * cluster scheduler's resource model at all (no sync_kind property
- * exists there yet) -- that integration is real, separate follow-up
- * work once this riskier, lower-level piece (real page table surgery)
- * is proven correct on its own. BSP-only: all cores currently share the
- * same page tables (see kernel.c's own note on this), so touching them
- * here is a single-core demonstration, not yet something safe to do
- * with another core concurrently relying on the same mapping. */
+ * reasoning. The BSP-only standalone demo uses its own reserved region;
+ * the STREAM/COW resource jobs below separately test an AP splitting
+ * its OWN page table while the BSP retains the original shared mapping. */
 typedef struct {
     uint64_t pml4_phys;
 } pagefault_demo_ctx_t;
@@ -1287,6 +1282,14 @@ void coreinit_main(struct init_boot_info *info)
         pf_ctx.pml4_phys = info->pml4_phys;
         scheduler_submit(JOB_TYPE_PAGEFAULT_DEMO, &pf_ctx, 5, 0,
                          RESOURCE_KIND_NONE, 0);
+#if defined(__aarch64__)
+        /* After PSCI bring-up, prove an AP uses its OWN page tables to
+         * stream and COW-copy BSP-owned resource pages. */
+        if (have_topo && topo.count > 1 && pagefault_supported()) {
+            scheduler_submit(JOB_TYPE_STREAM_SETUP, NULL, 4, 0,
+                             RESOURCE_KIND_NONE, 0);
+        }
+#endif
     }
 
     kprintf("\n[coreinit] TODO: load securinit as the next stage and hand "

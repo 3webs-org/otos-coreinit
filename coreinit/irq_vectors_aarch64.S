@@ -1,7 +1,7 @@
 /* ARMv8 EL1 vector table. Each slot is 128 bytes; VBAR_EL1 requires a
- * 2 KiB-aligned table. All IRQ origins use one save/dispatch/ERET path.
- * Synchronous, FIQ and SError exceptions halt rather than returning to
- * the faulting instruction indefinitely. */
+ * 2 KiB-aligned table. IRQ and synchronous exceptions save every GPR and
+ * ELR/SPSR, dispatch to separate C handlers, and ERET only when resolved.
+ * FIQ and SError halt rather than retrying indefinitely. */
 .text
 .p2align 11
 .global _irq_aarch64_vectors
@@ -11,22 +11,22 @@ _irq_aarch64_vectors:
     .balign 128
 .endm
 /* Current EL using SP_EL0. */
-VECTOR _irq_aarch64_unhandled
+VECTOR _irq_aarch64_sync_entry
 VECTOR _irq_aarch64_entry
 VECTOR _irq_aarch64_unhandled
 VECTOR _irq_aarch64_unhandled
 /* Current EL using SP_EL1. */
-VECTOR _irq_aarch64_unhandled
+VECTOR _irq_aarch64_sync_entry
 VECTOR _irq_aarch64_entry
 VECTOR _irq_aarch64_unhandled
 VECTOR _irq_aarch64_unhandled
 /* Lower EL using AArch64. */
-VECTOR _irq_aarch64_unhandled
+VECTOR _irq_aarch64_sync_entry
 VECTOR _irq_aarch64_entry
 VECTOR _irq_aarch64_unhandled
 VECTOR _irq_aarch64_unhandled
 /* Lower EL using AArch32. */
-VECTOR _irq_aarch64_unhandled
+VECTOR _irq_aarch64_sync_entry
 VECTOR _irq_aarch64_entry
 VECTOR _irq_aarch64_unhandled
 VECTOR _irq_aarch64_unhandled
@@ -37,12 +37,9 @@ _irq_aarch64_unhandled:
     b 1b
 
 /* 31 GPRs + ELR_EL1 + SPSR_EL1, rounded to 16-byte stack alignment.
- * Hardware masks IRQs at entry. Preserve every register the interrupted
- * code can observe, including x18 (Darwin's platform register). The C
- * dispatcher runs on the interrupted core's own stack and may call the
- * object's ordinary kernel_invoke function; ERET restores the original
- * interrupt mask atomically from SPSR_EL1. */
-_irq_aarch64_entry:
+ * Preserve every register including x18. Synchronous data aborts and
+ * asynchronous IRQs use the same frame, then separate dispatchers. */
+.macro SAVE_AND_DISPATCH handler
     sub sp, sp, #272
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
@@ -64,7 +61,17 @@ _irq_aarch64_entry:
     str x0, [sp, #248]
     mrs x0, spsr_el1
     str x0, [sp, #256]
-    bl _irq_aarch64_dispatch
+    bl \handler
+    b _irq_aarch64_restore
+.endm
+
+_irq_aarch64_sync_entry:
+    SAVE_AND_DISPATCH _pagefault_aarch64_handle
+
+_irq_aarch64_entry:
+    SAVE_AND_DISPATCH _irq_aarch64_dispatch
+
+_irq_aarch64_restore:
     ldr x0, [sp, #248]
     msr elr_el1, x0
     ldr x0, [sp, #256]

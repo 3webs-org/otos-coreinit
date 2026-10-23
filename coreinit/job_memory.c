@@ -100,16 +100,20 @@ int job_memory_acquire_resource(uint64_t resource_id, job_memory_slice_t *out)
     uint64_t region_end = (descriptor + capacity + 0x1FFFFFull) & ~0x1FFFFFull;
     for (uint64_t region = region_start; region < region_end;
          region += 0x200000ull) {
-        pagefault_split_region(g_my_pml4_phys, region);
+        if (!pagefault_split_region(g_my_pml4_phys, region) &&
+            !pagefault_debug_read_pte(g_my_pml4_phys, region)) {
+            return 0; /* Neither newly split nor already page-granular. */
+        }
     }
 
     uint64_t page_start = descriptor & ~0xFFFull;
     uint64_t page_end = (descriptor + capacity + 0xFFFull) & ~0xFFFull;
     for (uint64_t page = page_start; page < page_end; page += 0x1000ull) {
-        if (sync_kind == RESOURCE_SYNC_STREAM) {
-            pagefault_mark_absent(g_my_pml4_phys, page);
-        } else {
-            pagefault_mark_cow(g_my_pml4_phys, page);
+        int ok = sync_kind == RESOURCE_SYNC_STREAM
+            ? pagefault_mark_absent(g_my_pml4_phys, page)
+            : pagefault_mark_cow(g_my_pml4_phys, page);
+        if (!ok) {
+            return 0; /* Never claim STREAM/COW protection we did not set. */
         }
     }
 

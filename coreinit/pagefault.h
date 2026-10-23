@@ -15,14 +15,11 @@
  * the handler returns -- this is what makes page faults different from
  * an ordinary exception: they're precisely restartable by construction.
  *
- * SCOPE, stated plainly: this project's current identity map is built
- * entirely from 2MB huge pages (see boot.S), which have no per-4KB-page
- * presence control at all -- you can't fault on part of a huge page.
- * page_fault_split_region converts ONE 2MB region into a real 4-level
- * mapping (511 more 4KB pages, replicating the original identical
- * access) specifically so ITS pages can be individually marked present
- * or not. This only touches the one region asked for; the rest of the
- * identity map is untouched.
+ * SCOPE: x86 boots with 2 MiB huge pages; ARM's QEMU virt reference
+ * init builds a 1 GiB RAM block and splits that into 2 MiB blocks on
+ * demand. pagefault_split_region changes ONE requested 2 MiB block to
+ * 4 KiB pages with the same identity translations before marking any
+ * page absent or read-only. The rest of the map stays unchanged.
  *
  * Also stated plainly: in this project's current single-box,
  * shared-memory architecture, "resolving" a fault on a streamed page
@@ -42,15 +39,15 @@
  * MMU. */
 int pagefault_supported(void);
 
+/* x86 page-table bit names; the ARM backend owns separate descriptor
+ * flags and returns its raw L3 descriptor from debug_read_pte. */
 #define PAGE_PRESENT 0x1ull
 #define PAGE_WRITABLE 0x2ull
 #define PAGE_HUGE 0x80ull
 #define PAGE_ADDR_MASK 0x000FFFFFFFFFF000ull
 
-/* Installs the #PF (vector 14) handler into this core's own IDT. Must
- * be called after irq_core_init (which loads a valid IDT this can add a
- * gate to) -- same "write to the array irq_install_handler already
- * exposed" pattern as the LAPIC timer's own vector. */
+/* x86 installs #PF vector 14 in its IDT. ARM installs its synchronous
+ * EL1 Data Abort handler in the per-core VBAR_EL1 vector table. */
 void pagefault_init(uint64_t pml4_phys);
 
 /* Splits the 2MB huge-page region containing `region_base` (must
