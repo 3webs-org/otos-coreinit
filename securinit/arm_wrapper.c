@@ -1,10 +1,11 @@
-/* Trusted wrapper-owned ARM privilege boundary. No saski trap or kernel
- * capability namespace is installed: coreinit's EL1 vector only saves a
- * frame and calls this wrapper callback, which owns EL0 mapping/policy.
- * This first probe proves the Admin record is inaccessible to EL0 and
- * returns control to the same privileged wrapper through ERET. */
+/* Wrapper-owned EL0 boundary: coreinit's EL1 vector only saves the frame
+ * and routes exceptions here. This trusted callback validates/copies guest
+ * Cap'n Proto bytes and invokes an explicitly granted Gate capability;
+ * saski owns no SVC backend or kernel capability namespace. */
 #include "arm_wrapper.h"
+#include "user_ipc.h"
 #include "capnp_build.h"
+#include "generated_schemas.h"
 #include <stdint.h>
 
 #define PAGE_SIZE 4096ull
@@ -23,11 +24,17 @@ static uint64_t g_user_l2[512] __attribute__((aligned(4096)));
 static uint64_t g_user_l3[512] __attribute__((aligned(4096)));
 static uint64_t g_user_base, g_user_size, g_forbidden_addr;
 static uint64_t g_resume_pc, g_saved_daif, g_denied_access, g_exits;
+static uint64_t g_ipc_denied, g_ipc_forwarded;
+static capability_t g_granted_gate;
+static int (*g_priv_invoke)(capability_t, uint32_t, const void *, size_t,
+                            void *, size_t, size_t *);
+static uint8_t g_request[WRAPPER_IPC_MAX_BYTES], g_response[WRAPPER_IPC_MAX_BYTES];
 
 extern const uint8_t securinit_arm_probe_start[], securinit_arm_probe_end[];
 extern uint64_t securinit_arm_run_user(uint64_t entry, uint64_t user_stack,
                                         uint64_t forbidden, uint64_t *resume_pc,
-                                        uint64_t *saved_daif);
+                                        uint64_t *saved_daif, uint64_t result_words,
+                                        uint64_t rejected_call, uint64_t granted_call);
 
 static void flush_translations(void)
 {
@@ -51,6 +58,58 @@ static void sync_executable(uint64_t start, uint64_t end)
     __asm__ volatile("dsb ish\n\tisb" ::: "memory");
 }
 
+static int within_user(uint64_t addr, uint64_t size)
+{
+    return addr >= g_user_base && size <= g_user_size &&
+           addr - g_user_base <= g_user_size - size;
+}
+
+static int64_t dispatch_guest_call(uint64_t descriptor_addr)
+{
+    if (!within_user(descriptor_addr, sizeof(wrapper_ipc_call_t))) {
+        g_ipc_denied++;
+        return WRAPPER_IPC_BAD_DESCRIPTOR;
+    }
+    wrapper_ipc_call_t call;
+    const uint8_t *src = (const uint8_t *)(uintptr_t)descriptor_addr;
+    uint8_t *dst = (uint8_t *)&call;
+    for (size_t i = 0; i < sizeof(call); i++) dst[i] = src[i];
+    if (call.version != WRAPPER_IPC_VERSION) {
+        g_ipc_denied++;
+        return WRAPPER_IPC_BAD_DESCRIPTOR;
+    }
+    if (call.local_endpoint != WRAPPER_GATE_ENDPOINT ||
+        call.method_id != GATE_METHOD_INVOKE) {
+        g_ipc_denied++;
+        return WRAPPER_IPC_BAD_ENDPOINT;
+    }
+    if (call.request_len > WRAPPER_IPC_MAX_BYTES ||
+        call.response_capacity > WRAPPER_IPC_MAX_BYTES ||
+        !within_user(call.request_ptr, call.request_len) ||
+        !within_user(call.response_ptr, call.response_capacity)) {
+        g_ipc_denied++;
+        return WRAPPER_IPC_BOUNDS;
+    }
+    src = (const uint8_t *)(uintptr_t)call.request_ptr;
+    for (uint64_t i = 0; i < call.request_len; i++) g_request[i] = src[i];
+    size_t response_len = 0;
+    if (!g_priv_invoke(g_granted_gate, call.method_id,
+                       g_request, (size_t)call.request_len,
+                       g_response, (size_t)call.response_capacity,
+                       &response_len) || response_len > call.response_capacity) {
+        g_ipc_denied++;
+        return WRAPPER_IPC_REJECTED;
+    }
+    dst = (uint8_t *)(uintptr_t)call.response_ptr;
+    for (size_t i = 0; i < response_len; i++) dst[i] = g_response[i];
+    call.response_len = response_len;
+    dst = (uint8_t *)(uintptr_t)(descriptor_addr + offsetof(wrapper_ipc_call_t, response_len));
+    src = (const uint8_t *)&call.response_len;
+    for (unsigned i = 0; i < 8; i++) dst[i] = src[i];
+    g_ipc_forwarded++;
+    return WRAPPER_IPC_OK;
+}
+
 static int wrapper_el0_sync(uint64_t *frame, uint64_t esr, uint64_t far)
 {
     if ((frame[32] & 0xfu) != 0 || frame[31] < g_user_base ||
@@ -66,6 +125,10 @@ static int wrapper_el0_sync(uint64_t *frame, uint64_t esr, uint64_t far)
         frame[2] = 0;
         return 1;
     }
+    if (ec == 0x15 && (esr & 0xffffu) == 0) { /* wrapper's only SVC */
+        frame[0] = (uint64_t)dispatch_guest_call(frame[0]);
+        return 1;
+    }
     if (ec == 0x3c) { /* BRK terminates this one-shot wrapped probe. */
         g_exits++;
         frame[31] = g_resume_pc;
@@ -77,7 +140,8 @@ static int wrapper_el0_sync(uint64_t *frame, uint64_t esr, uint64_t far)
 }
 
 int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
-                                  uint64_t privileged_addr)
+                                  uint64_t privileged_addr,
+                                  capability_t granted_gate)
 {
     uint64_t base = info->user_region_base;
     if (!info->exception_router.handle || !info->ttbr0_root_phys ||
@@ -115,7 +179,39 @@ int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
     g_user_base = base;
     g_user_size = REGION_SIZE;
     g_forbidden_addr = privileged_addr;
+    g_granted_gate = granted_gate;
+    g_priv_invoke = info->kernel_invoke;
     g_resume_pc = g_saved_daif = g_denied_access = g_exits = 0;
+    g_ipc_denied = g_ipc_forwarded = 0;
+
+    const uint64_t rejected_addr = base + 0x2000;
+    const uint64_t granted_addr = base + 0x2080;
+    const uint64_t request_addr = base + 0x3000;
+    const uint64_t response_addr = base + 0x3100;
+    const uint64_t result_addr = base + 0x4000;
+    uint64_t marker = SECURINIT_EL0_IPC_MARKER;
+    size_t request_size = capnp_build_flat((void *)(uintptr_t)request_addr,
+                                            24, &marker, 1);
+    wrapper_ipc_call_t call = {
+        .local_endpoint = WRAPPER_GATE_ENDPOINT,
+        .version = WRAPPER_IPC_VERSION,
+        .method_id = GATE_METHOD_INVOKE,
+        .request_ptr = request_addr,
+        .request_len = request_size,
+        .response_ptr = response_addr,
+        .response_capacity = 24,
+    };
+    const uint8_t *call_bytes = (const uint8_t *)&call;
+    for (size_t i = 0; i < sizeof(call); i++) {
+        ((uint8_t *)(uintptr_t)granted_addr)[i] = call_bytes[i];
+    }
+    call.local_endpoint = WRAPPER_GATE_ENDPOINT + 1; /* not granted */
+    call_bytes = (const uint8_t *)&call;
+    for (size_t i = 0; i < sizeof(call); i++) {
+        ((uint8_t *)(uintptr_t)rejected_addr)[i] = call_bytes[i];
+    }
+    ((uint64_t *)(uintptr_t)result_addr)[0] = UINT64_MAX;
+    ((uint64_t *)(uintptr_t)result_addr)[1] = UINT64_MAX;
     l1[1] = (uint64_t)(uintptr_t)g_user_l2 | TABLE_DESC;
     flush_translations();
     sync_executable(entry, entry + bytes);
@@ -136,8 +232,17 @@ int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
 
     uint64_t result = securinit_arm_run_user(entry, base + REGION_SIZE - 16,
                                               privileged_addr, &g_resume_pc,
-                                              &g_saved_daif);
+                                              &g_saved_daif, result_addr,
+                                              rejected_addr, granted_addr);
     l1[1] = old_l1;
     flush_translations();
-    return result == 0 && g_denied_access == 1 && g_exits == 1;
+    const uint64_t *guest_results = (const uint64_t *)(uintptr_t)result_addr;
+    const wrapper_ipc_call_t *granted =
+        (const wrapper_ipc_call_t *)(uintptr_t)granted_addr;
+    uint64_t forwarded = capnp_read_flat((const void *)(uintptr_t)response_addr)[0];
+    return result == 0 && g_denied_access == 1 && g_exits == 1 &&
+           g_ipc_denied == 1 && g_ipc_forwarded == 1 &&
+           guest_results[0] == (uint64_t)(int64_t)WRAPPER_IPC_BAD_ENDPOINT &&
+           guest_results[1] == WRAPPER_IPC_OK &&
+           granted->response_len == 24 && forwarded == 1;
 }

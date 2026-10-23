@@ -7,5 +7,6 @@
  * lower-EL synchronous policy. The existing coreinit vector only saves a
  * frame and forwards exceptions to this registered callback. */
 int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
-                                  uint64_t privileged_addr);
+                                  uint64_t privileged_addr,
+                                  capability_t granted_gate);
 #endif

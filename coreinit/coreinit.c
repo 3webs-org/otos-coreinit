@@ -999,6 +999,8 @@ static void securinit_status_sink(void *data, uint32_t method_id,
         kprintf("[securinit] stage 2 entered through the standard IPC object interface\n");
     } else if (marker == SECURINIT_EL0_DENIED_MARKER) {
         kprintf("[securinit] EL0 hardware denied access to Admin; wrapper regained EL1\n");
+    } else if (marker == SECURINIT_EL0_IPC_MARKER) {
+        kprintf("[securinit] EL0 outbound Cap'n Proto IPC traversed wrapper-owned Gate\n");
     }
 }
 

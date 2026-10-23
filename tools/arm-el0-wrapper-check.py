@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""QEMU judge: wrapper-owned EL0 mapping denies a read of Admin's EL1 page.
+"""QEMU judge: wrapper-owned EL0 isolation AND outgoing IPC mediation.
 
 Use KERNEL_IMAGE=... for -kernel, or BOOT_DISK=... for the unchanged GRUB
-xnu_kernel64 config. Checks actual ESR/FAR/ELR from QEMU's exception trace,
-then the stage-2 IPC marker after BRK returns through the wrapper to EL1.
+xnu_kernel64 config. Checks hardware denial of Admin, two EL0 SVC entries
+(one ungranted endpoint rejected, one Gate call forwarded), and BRK→EL1.
 """
 
 import os
@@ -61,7 +61,8 @@ try:
     while time.monotonic() < deadline:
         text = LOG.read_text(errors="ignore") if LOG.exists() else ""
         if ("EL0 hardware denied access to Admin" in text and
-                "Gate denied 1 request(s), forwarded 1" in text):
+                "EL0 outbound Cap'n Proto IPC traversed wrapper-owned Gate" in text and
+                "Gate denied 1 request(s), forwarded 2" in text):
             break
         if process.poll() is not None:
             raise RuntimeError("QEMU exited before the wrapper proof")
@@ -76,14 +77,15 @@ try:
     far_match = re.search(r"with ESR 0x24/0x[0-9a-fA-F]+\n\.\.\.with FAR 0x([0-9a-fA-F]+)", trace)
     far = int(far_match.group(1), 16) if far_match else 0
     if (far != protected or "with ELR 0x54801000" not in trace or
+            trace.count("with ESR 0x15/") < 2 or
             "with ESR 0x3c/" not in trace or
             "Exception return from AArch64 EL1 to AArch64 EL1 PC" not in trace or
             "UNHANDLED ARM exception" in text or "Synchronous Exception" in text or
             (DISK and "[grubcfg] kernel loaded, booting" not in text)):
         raise RuntimeError(f"EL0 denial/EL1 return mismatch: FAR={far:#x}, "
                            f"Admin={protected:#x}; see {TRACE}")
-    print(f"ARM GICv{GIC} wrapper-owned EL0 denial: PASS "
-          f"(FAR={far:#x}, then BRK→EL1)")
+    print(f"ARM GICv{GIC} wrapper-owned EL0 IPC: PASS "
+          f"(Admin FAR={far:#x}, 2×SVC, BRK→EL1)")
 finally:
     process.terminate()
     try:
