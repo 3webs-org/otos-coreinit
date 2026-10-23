@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cap.h"
+#include "generated_schemas.h"
 
 /* The main cluster scheduler: the sole scheduling authority -- the
  * per-core scheduler that used to sit underneath this has been folded
@@ -157,10 +158,6 @@
  * handle directly can invoke it without going through cluster_scheduler
  * as a middleman, the same way job_kprintf reserves the serial resource
  * for the duration of one print call. */
-#define RESOURCE_METHOD_GET_INFO 0
-#define RESOURCE_METHOD_RESERVE 1
-#define RESOURCE_METHOD_RELEASE_RESERVATION 2
-#define RESOURCE_METHOD_REASSIGN 3
 
 /* Mutex 0 is reserved for the memory allocator -- both
  * handle_allocate_slice and handle_release_slice assume the caller

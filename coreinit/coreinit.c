@@ -21,6 +21,7 @@
 #include "ata.h"
 #include "cap.h"
 #include "capnp_build.h"
+#include "generated_schemas.h"
 #include "cluster_scheduler.h"
 #include "arch_mmu.h"
 #include "cross_core_signal.h"
@@ -371,21 +372,7 @@ static void run_job_exec_priority_test(void)
     job_exec_free_stack(slot_low);
 }
 
-/* The "plain" object schema (tick_counter and anything else with one
- * method taking one word and writing no response) -- const table form,
- * same reasoning as every other schema in this tree: see schema.h's own
- * header comment. Integer initialisers need no relocation, so these
- * bytes are identical for every kernel instance and nothing is ever
- * populated at runtime. */
-static const struct_schema_t plain_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t plain_methods[] = {
-    {0, 0, SCHEMA_IDX_NONE},
-};
-static const object_schema_t plain_objects[] = {{0, 1}};
-static const schema_table_t g_plain_table = {
-    plain_structs, 1, NULL, 0, plain_methods, 1, plain_objects, 1};
+
 #define PLAIN_SCHEMA_TICK_COUNTER 0
 
 /* ---- Device discovery ---- */
@@ -421,16 +408,7 @@ static void print_pci_device(const pci_device_info_t *dev, void *user_data)
  * everything else. Method 0 = read one sector by LBA. Deliberately
  * unguarded -- see file header. ---- */
 
-static const struct_schema_t disk_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE},  /* {lba: u64} */
-    {64, 0, SCHEMA_IDX_NONE}, /* 512 bytes */
-};
-static const method_schema_t disk_methods[] = {
-    {0, 0, 1},
-};
-static const object_schema_t disk_objects[] = {{0, 1}};
-static const schema_table_t g_disk_table = {
-    disk_structs, 2, NULL, 0, disk_methods, 1, disk_objects, 1};
+
 #define DISK_SCHEMA_DISK 0
 
 static void disk_handler(void *data, uint32_t method_id, const void *msg,

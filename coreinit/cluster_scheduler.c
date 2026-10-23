@@ -63,27 +63,6 @@ typedef struct {
 
 /* RESOURCE_METHOD_* constants now live in cluster_scheduler.h. */
 
-/* Every schema this file provides is compile-time const data in the
- * index-based form schema.h describes: references are uint16_t indices
- * into a flat schema_table_t, integer initialisers need no relocation,
- * and nothing is populated at runtime -- the same table bytes serve
- * every kernel instance, which is what let the per-instance
- * *_build_schema calls disappear. Struct entries are deduplicated by
- * data-word count (index 0 = the 1-word shape, index 1 = 6 words).
- * Object index constants live in cluster_scheduler.h. */
-static const struct_schema_t res_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE},
-    {6, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t res_methods[] = {
-    {RESOURCE_METHOD_GET_INFO, 0, 1},
-    {RESOURCE_METHOD_RESERVE, 0, 0}, /* requesting_job */
-    {RESOURCE_METHOD_RELEASE_RESERVATION, 0, 0},
-    {RESOURCE_METHOD_REASSIGN, 0, 0}, /* new_owner_node */
-};
-static const object_schema_t res_objects[] = {{0, 4}};
-const schema_table_t g_resource_table = {
-    res_structs, 2, NULL, 0, res_methods, 4, res_objects, 1};
 
 static void resource_handler(void *data, uint32_t method_id, const void *msg,
                              size_t len, void *response, size_t response_cap,
@@ -405,57 +384,7 @@ static capability_t g_pool_resource; /* the one resource representing the
  * the top of this file, ahead of the resource object block that needs
  * it too. */
 
-#define METHOD_JOIN_NODE 0
-#define METHOD_LEAVE_NODE 1
-#define METHOD_REQUEST_ALLOCATION 2
-#define METHOD_DECLARE_RESOURCE 3
-#define METHOD_REASSIGN_RESOURCE 4
-#define METHOD_SUBMIT_JOB 5
-#define METHOD_GET_NEXT_JOB 6
-#define METHOD_REPORT_JOB_RESULT 7
-#define METHOD_MUTEX_TRY_LOCK 8
-#define METHOD_MUTEX_UNLOCK 9
-#define METHOD_GET_RESOURCE_INFO 10
-#define METHOD_ALLOCATE_SLICE 11
-#define METHOD_RELEASE_SLICE 12
 
-/* The cluster scheduler object's own schema -- same const-table form as
- * g_resource_table above. Struct indices: 0=1 word, 1=2, 2=3, 3=4, 4=5,
- * 5=6, 6=7. SCHEMA_IDX_NONE as a result schema means the method writes
- * no response; as a param schema it would mean no validation, which no
- * method here uses. */
-static const struct_schema_t cs_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE}, {2, 0, SCHEMA_IDX_NONE}, {3, 0, SCHEMA_IDX_NONE},
-    {4, 0, SCHEMA_IDX_NONE}, {5, 0, SCHEMA_IDX_NONE}, {6, 0, SCHEMA_IDX_NONE},
-    {7, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t cs_methods[] = {
-    {METHOD_JOIN_NODE, 3, SCHEMA_IDX_NONE}, /* node_id, arch, region_base,
-                                             * signal_target -- see
-                                             * node_data_t. Join is identity
-                                             * only; a node declares its own
-                                             * resources afterward, the same
-                                             * declare_resource path
-                                             * everything else uses -- see
-                                             * coreinit.c's own post-join
-                                             * calls. */
-    {METHOD_LEAVE_NODE, 0, SCHEMA_IDX_NONE},
-    {METHOD_REQUEST_ALLOCATION, 4, 1},
-    {METHOD_DECLARE_RESOURCE, 4, 0},
-    {METHOD_REASSIGN_RESOURCE, 1, 0},
-    {METHOD_SUBMIT_JOB, 6, 0},
-    {METHOD_GET_NEXT_JOB, 0, 3},
-    {METHOD_REPORT_JOB_RESULT, 2, SCHEMA_IDX_NONE},
-    {METHOD_MUTEX_TRY_LOCK, 1, 0},
-    {METHOD_MUTEX_UNLOCK, 1, SCHEMA_IDX_NONE},
-    {METHOD_GET_RESOURCE_INFO, 0, 5},
-    {METHOD_ALLOCATE_SLICE, 4, 2}, /* node_id, job_id, size, kind,
-                                    * sync_kind -> ok, resource_id, base */
-    {METHOD_RELEASE_SLICE, 1, 0},  /* resource_id, job_id -> ok */
-};
-static const object_schema_t cs_objects[] = {{0, 13}};
-const schema_table_t g_cluster_scheduler_table = {
-    cs_structs, 7, NULL, 0, cs_methods, 13, cs_objects, 1};
 
 typedef struct {
     uint64_t node_id;
@@ -471,17 +400,7 @@ typedef struct {
                              * from elsewhere in the cluster. */
 } node_data_t;
 
-#define NODE_METHOD_GET_INFO 0 /* dummy word in -> {node_id, arch, region_base} */
 
-static const struct_schema_t node_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE}, {3, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t node_methods[] = {
-    {NODE_METHOD_GET_INFO, 0, 1},
-};
-static const object_schema_t node_objects[] = {{0, 1}};
-const schema_table_t g_node_table = {
-    node_structs, 2, NULL, 0, node_methods, 1, node_objects, 1};
 
 static void node_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,
@@ -596,24 +515,7 @@ typedef struct {
     uint64_t holder_job_id;
 } mutex_data_t;
 
-#define MUTEX_METHOD_TRY_LOCK 0 /* {requesting_job_id} -> {ok, holder_job_id} --
-                                 * holder_job_id is meaningful when ok=0: who
-                                 * currently holds it, so the caller (always
-                                 * cluster_scheduler's own forwarding wrapper)
-                                 * can do priority inheritance without a
-                                 * second round trip. */
-#define MUTEX_METHOD_UNLOCK 1 /* {requesting_job_id} -> {ok} */
 
-static const struct_schema_t csm_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE}, {2, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t csm_methods[] = {
-    {MUTEX_METHOD_TRY_LOCK, 0, 1},
-    {MUTEX_METHOD_UNLOCK, 0, 0},
-};
-static const object_schema_t csm_objects[] = {{0, 2}};
-const schema_table_t g_cs_mutex_table = {
-    csm_structs, 2, NULL, 0, csm_methods, 2, csm_objects, 1};
 
 static void mutex_handler(void *data, uint32_t method_id, const void *msg,
                           size_t len, void *response, size_t response_cap,
@@ -729,36 +631,7 @@ typedef struct {
                               * that double-dispatch, without a lock. */
 } job_data_t;
 
-#define JOB_METHOD_GET_INFO 0 /* dummy word in -> 13-word job_info_t, in
-                               * field order */
-#define JOB_METHOD_UPDATE_SCHEDULING_STATE 1 /* {assigned_node,
-                                              * bound_resource_id, blocked,
-                                              * block_kind, block_id,
-                                              * effective_priority} -> {ok}
-                                              * -- one bulk write rather
-                                              * than a field setter per
-                                              * mutation: the scheduling
-                                              * loop below is the hottest
-                                              * path in the whole system,
-                                              * and a real, unbounded
-                                              * number of individual
-                                              * kernel_invoke round trips
-                                              * per job per tick was not
-                                              * an acceptable cost the way
-                                              * it was for resources
-                                              * (created and queried far
-                                              * less often). */
 
-static const struct_schema_t job_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE}, {6, 0, SCHEMA_IDX_NONE}, {13, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t job_methods[] = {
-    {JOB_METHOD_GET_INFO, 0, 2},
-    {JOB_METHOD_UPDATE_SCHEDULING_STATE, 1, 0},
-};
-static const object_schema_t job_objects[] = {{0, 2}};
-const schema_table_t g_job_table = {
-    job_structs, 3, NULL, 0, job_methods, 2, job_objects, 1};
 
 static void job_handler(void *data, uint32_t method_id, const void *msg,
                         size_t len, void *response, size_t response_cap,

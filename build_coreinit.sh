@@ -146,6 +146,13 @@ case "$ARCH" in
         ;;
 esac
 
+# Cap'n Proto source is compiled on the host for every build, regardless
+# of the kernel's EMBEDDED machine-description choice. The output contains
+# only const index-based C tables -- no schema text or runtime parser.
+python3 "$ROOT/tools/gen-capnp-schemas.py" "$ROOT/schemas/coreinit.capnp" "$BUILD"
+"$CC" $CFLAGS -I"$BUILD" -c "$BUILD/generated_schemas.c" \
+    -o "$BUILD/coreinit_generated_schemas.o"
+
 # Compile C sources
 for src in $SOURCES; do
     base=$(basename "$src" .c)
@@ -199,7 +206,7 @@ for src in $SOURCES; do
             obj="$BUILD/coreinit_${base}.o"
             ;;
     esac
-    "$CC" $CFLAGS -c "$ROOT/$src" -o "$obj"
+    "$CC" $CFLAGS -I"$BUILD" -c "$ROOT/$src" -o "$obj"
 done
 
 # Compile assembly sources
@@ -250,7 +257,7 @@ done
     "$BUILD/coreinit_pagefault.o" "$BUILD/coreinit_job_memory.o" \
     "$BUILD/coreinit_job_exec.o" "$BUILD/coreinit_job_exec_switch.o" \
     "$BUILD/coreinit_cross_core_signal.o" "$BUILD/coreinit_arch_mmu.o" \
-    "$BUILD/coreinit_arch_cpu.o" $ARCH_EXTRA_OBJS
+    "$BUILD/coreinit_arch_cpu.o" "$BUILD/coreinit_generated_schemas.o" $ARCH_EXTRA_OBJS
 
 echo "built $BUILD/coreinit.macho"
 file "$BUILD/coreinit.macho"

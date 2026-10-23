@@ -1,6 +1,7 @@
 #include "mem_mgr.h"
 #include "capnp_build.h"
 #include "schema.h"
+#include "generated_schemas.h"
 #include "serial.h"
 #include "try_lock.h"
 #include "arch_cpu.h"
@@ -42,23 +43,7 @@ static void mem_lock_acquire_wait(void)
 }
 
 
-#define METHOD_CLAIM 0
-#define METHOD_ALLOC 1
-#define METHOD_FREE 2
 
-static const struct_schema_t mem_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE}, /* claim result / free request+result shape */
-    {2, 0, SCHEMA_IDX_NONE}, /* alloc request {size, kind} */
-    {3, 0, SCHEMA_IDX_NONE}, /* claim request {base, size, kind} */
-};
-static const method_schema_t mem_methods[] = {
-    {METHOD_CLAIM, 2, 0},
-    {METHOD_ALLOC, 1, 1},
-    {METHOD_FREE, 0, 0},
-};
-static const object_schema_t mem_objects[] = {{0, 3}};
-const schema_table_t g_memory_manager_table = {
-    mem_structs, 3, NULL, 0, mem_methods, 3, mem_objects, 1};
 
 /* Shared by both the handler's CLAIM method and this file's own
  * init-time pre-registration of known-reserved regions -- one overlap

@@ -1,6 +1,7 @@
 #include "mutex_mgr.h"
 #include "capnp_build.h"
 #include "schema.h"
+#include "generated_schemas.h"
 #include "serial.h"
 #include "try_lock.h"
 
@@ -18,22 +19,7 @@ static volatile int g_mutex_used[MAX_MUTEXES]; /* CAS-claimed directly,
                                                 * throughout
                                                 * cluster_scheduler.c */
 
-#define METHOD_CREATE 0
-#define METHOD_LOCK 1
-#define METHOD_UNLOCK 2
 
-static const struct_schema_t mm_structs[] = {
-    {1, 0, SCHEMA_IDX_NONE},
-};
-static const method_schema_t mm_methods[] = {
-    {METHOD_CREATE, 0, 0},
-    {METHOD_LOCK, 0, 0}, /* try-only -- see handler; caller must check ok
-                          * and retry itself (never spins in here) */
-    {METHOD_UNLOCK, 0, SCHEMA_IDX_NONE},
-};
-static const object_schema_t mm_objects[] = {{0, 3}};
-const schema_table_t g_mutex_manager_table = {
-    mm_structs, 1, NULL, 0, mm_methods, 3, mm_objects, 1};
 
 void mutex_manager_init_schema(void)
 {

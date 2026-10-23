@@ -352,15 +352,6 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
             "interrupts enabled\n");
 }
 
-static const struct_schema_t irq_structs[] = {
-    {2, 0, SCHEMA_IDX_NONE}, /* {irq: u64, target: u64} */
-};
-static const method_schema_t irq_methods[] = {
-    {0, 0, SCHEMA_IDX_NONE},
-};
-static const object_schema_t irq_objects[] = {{0, 1}};
-const schema_table_t g_irq_manager_table = {
-    irq_structs, 1, NULL, 0, irq_methods, 1, irq_objects, 1};
 
 void irq_manager_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,
