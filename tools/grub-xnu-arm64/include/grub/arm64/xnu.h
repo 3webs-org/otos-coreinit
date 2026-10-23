@@ -59,19 +59,20 @@
 #define GRUB_XNU_PAGESIZE 4096
 typedef grub_uint64_t grub_xnu_ptr_t;
 
+/* The boot-parameter block is a wire format, not a native struct: the
+ * kernel reads it with the same packed, 32-bit-pointer layout on every
+ * standard platform, so it is byte-for-byte i386's (include/grub/i386/
+ * xnu.h). grub_xnu_ptr_t stays 64-bit for the loader's own bookkeeping;
+ * only these fields are narrowed, and grub_xnu_boot refuses to boot if
+ * an address it would store does not fit. */
 struct grub_xnu_boot_params_common
 {
-  /* Command line passed to xnu. */
   grub_uint8_t cmdline[1024];
-
-  /* Later are the same as EFI's get_memory_map (). */
-  grub_xnu_ptr_t efi_mmap;
+  grub_uint32_t efi_mmap;
   grub_uint32_t efi_mmap_size;
   grub_uint32_t efi_mem_desc_size;
   grub_uint32_t efi_mem_desc_version;
-
-  /* Later are video parameters. */
-  grub_xnu_ptr_t lfb_base;
+  grub_uint32_t lfb_base;
 #define GRUB_XNU_VIDEO_SPLASH 1
 #define GRUB_XNU_VIDEO_TEXT_IN_VIDEO 2
   grub_uint32_t lfb_mode;
@@ -79,59 +80,49 @@ struct grub_xnu_boot_params_common
   grub_uint32_t lfb_width;
   grub_uint32_t lfb_height;
   grub_uint32_t lfb_depth;
-
-  /* Pointer to device tree and its len. */
-  grub_xnu_ptr_t devtree;
+  grub_uint32_t devtree;
   grub_uint32_t devtreelen;
-
-  /* First used address by kernel or boot structures. */
-  grub_xnu_ptr_t heap_start;
-  /* Last used address by kernel or boot structures minus previous value. */
+  grub_uint32_t heap_start;
   grub_uint32_t heap_size;
-  /* First memory page containing runtime code or data. */
-  grub_xnu_ptr_t efi_runtime_first_page;
-  /* Number of runtime pages. */
+  grub_uint32_t efi_runtime_first_page;
   grub_uint32_t efi_runtime_npages;
-};
+} GRUB_PACKED;
 
 struct grub_xnu_boot_params_v1
 {
+  grub_uint16_t verminor;
+  grub_uint16_t vermajor;
   struct grub_xnu_boot_params_common common;
-};
+  grub_uint32_t efi_system_table;
+  grub_uint8_t efi_uintnbits;
+} GRUB_PACKED;
 
 #define GRUB_XNU_BOOTARGSV1_VERMINOR 5
 #define GRUB_XNU_BOOTARGSV1_VERMAJOR 1
 
 struct grub_xnu_boot_params_v2
 {
-  /* Version of the struct -- if this is not what the kernel expects it
-   * will attempt to use the v1 layout instead. */
   grub_uint16_t verminor;
   grub_uint16_t vermajor;
-
   grub_uint8_t efi_uintnbits;
-
-  grub_uint8_t unused0[3];
-
+  grub_uint8_t unused[3];
   struct grub_xnu_boot_params_common common;
-
-  grub_xnu_ptr_t efi_runtime_first_page_virtual;
-
-  /* Physical address of the EFI system table. */
-  grub_xnu_ptr_t efi_system_table;
-
-  grub_uint32_t unused1[9];
-
-  /* Total RAM as discovered from the EFI memory map. */
+  grub_uint64_t efi_runtime_first_page_virtual;
+  grub_uint32_t efi_system_table;
+  grub_uint32_t unused2[9];
   grub_uint64_t ram_size;
-
-  /* CPU frequency. On aarch64 this comes from the generic timer's
-   * CNTFRQ_EL0 rather than from a calibrated TSC; the field is kept at
-   * the same offset so a consumer reading one layout works on both. */
   grub_uint64_t fsbfreq;
+  grub_uint32_t unused3[734];
+} GRUB_PACKED;
 
-  grub_uint32_t unused2[734];
-};
+/* Offsets the kernel side hardcodes; checked against i386's layout. */
+_Static_assert (sizeof (struct grub_xnu_boot_params_common) == 1088,
+		"common block must match i386");
+_Static_assert (__builtin_offsetof (struct grub_xnu_boot_params_v2,
+				    efi_system_table) == 1104,
+		"efi_system_table must sit where i386 puts it");
+_Static_assert (sizeof (struct grub_xnu_boot_params_v2) == 4096,
+		"v2 block is one page, as on i386");
 
 #define GRUB_XNU_BOOTARGSV2_VERMINOR 0
 #define GRUB_XNU_BOOTARGSV2_VERMAJOR 2
@@ -188,10 +179,47 @@ extern char grub_xnu_cmdline[1024];
  * width differs, which is the whole point of an arch half. */
 extern grub_xnu_ptr_t grub_xnu_stack;
 
-/* loader/xnu.c uses grub_memcpy throughout. Stock GRUB kernels export
- * the compiler-rt spelling `memcpy` instead, so the module carries its
- * own -- see the note beside the definition in loader/arm64/xnu.c. */
+/* The low-28-bit image-base mask the portable loader applies to a 64-bit
+ * Mach-O's segment bounds and entry point.
+ *
+ * loader/xnu.c hardcodes 0x0fffffff. That is the x86 convention: an i386
+ * XNU kernel's __TEXT sits at 0x1000000, and the mask both keeps the load
+ * address inside the low 256 MiB the 32-bit relocator can reach and
+ * strips the KERNEL_BASE page so the kernel can be placed at its offset
+ * rather than its link address.
+ *
+ * An aarch64 kernel does not share that base. Linking at 0x0fffffff or
+ * below would land the image back in firmware's own structures -- this
+ * port links at 0x40200000, a 16 MiB page zero above the lowest
+ * firmware-owned addresses QEMU virt has been observed to use. Masking
+ * that to 28 bits gives 0x200000, so the heap allocation lands on low
+ * firmware memory and fails ("cannot allocate 0x9e410 bytes at
+ * 0x200000").
+ *
+ * The mask therefore has to come from the arch. Full width is the honest
+ * answer here: nothing above the 64-bit Mach-O's own address space needs
+ * stripping, and the arch half hands the kernel an address the MMU is
+ * off for. */
+#define GRUB_XNU_IMAGE_BASE_MASK 0xffffffffffffffffULL
+
+/* The entry point of a 64-bit Mach-O kernel. machoXX.c's reader assumes
+ * an x86_THREAD_STATE64 LC_UNIXTHREAD and takes the 64-bit word at 0x90
+ * (rip). An arm64 XNU kernel carries ARM_THREAD_STATE64 instead, where
+ * that word is x16 and pc sits after x0..x28, fp, lr, sp. The reader
+ * lives in macho.mod, which this port leaves stock, so loader/xnu.c is
+ * pointed at this arch reader instead (prepare-src.sh). */
+struct grub_macho_file;
+grub_uint64_t grub_xnu_arm64_get_entry_point64 (struct grub_macho_file *macho,
+					       const char *filename);
+#define GRUB_XNU_GET_ENTRY_POINT64 grub_xnu_arm64_get_entry_point64
+
+/* loader/xnu.c uses grub_memcpy throughout. Self-built and 2.12-era GRUB
+ * kernels export the grub_ spelling; 2.14+ exports only the compiler-rt
+ * `memcpy`. The build defines GRUB_XNU_HAVE_MEMCPY when the target
+ * provides it, so the module only carries its own when it must. */
+#ifndef GRUB_XNU_HAVE_MEMCPY
 void *grub_memcpy (void *dest, const void *src, grub_size_t n);
+#endif
 grub_err_t grub_xnu_boot (void);
 
 #endif /* GRUB_CPU_XNU_H */

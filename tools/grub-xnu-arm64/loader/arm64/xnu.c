@@ -67,6 +67,8 @@
 #include <grub/efi/api.h>
 #include <grub/cpu/xnu.h>
 #include <grub/xnu.h>
+#include <grub/machoload.h>
+#include <grub/macho.h>
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
@@ -83,6 +85,15 @@ extern int grub_xnu_is_64bit;
  * the target physical address in grub_xnu_heap_target_start. */
 extern grub_addr_t grub_xnu_heap_target_start;
 extern grub_uint64_t grub_xnu_heap_size;
+
+/* The boot-parameter block carries i386's 32-bit address fields. */
+static int
+fits32 (grub_uint64_t addr)
+{
+  return addr <= 0xffffffffULL;
+}
+
+#define GRUB_XNU_ARM64_STACK_SIZE (16 * GRUB_XNU_PAGESIZE)
 
 static grub_efi_uintn_t
 efi_mmap_size (grub_efi_uintn_t *out_desc_size,
@@ -130,11 +141,17 @@ grub_xnu_boot (void)
   void *map_target = NULL;
   grub_addr_t stack_top;
   grub_efi_uintn_t key = 0;
+  grub_uint64_t ram_size = 0;
 
-  /* The portable loader already allocated the boot-parameter block in
-   * the kernel's heap region and recorded where. */
-  bootparams_target = grub_xnu_heap_target_start;
-  bp = (struct grub_xnu_boot_params_v2 *) (grub_addr_t) bootparams_target;
+  /* The boot-parameter block is carved from the kernel heap exactly as
+   * loader/i386/xnu.c does it: the heap starts at the kernel image, so
+   * its first bytes are the kernel's own __TEXT. */
+  {
+    void *bp_in;
+    if (grub_xnu_heap_malloc (sizeof (*bp), &bp_in, &bootparams_target))
+      return grub_errno;
+    bp = bp_in;
+  }
 
   grub_memset (bp, 0, sizeof (*bp));
 
@@ -174,7 +191,34 @@ grub_xnu_boot (void)
         grub_memcpy (map_target, memory_map, mmap_size);
         (void) heap_target;
       }
-      bp->common.efi_mmap = (grub_xnu_ptr_t) (grub_addr_t) map_target;
+      bp->common.efi_mmap = (grub_uint32_t) (grub_addr_t) map_target;
+      if (!fits32 ((grub_addr_t) map_target + mmap_size))
+	{
+	  grub_free (memory_map);
+	  return grub_error (GRUB_ERR_BAD_OS, "memory map above 4 GiB");
+	}
+      /* Total RAM, as i386's total_ram_hook sums it: every range the OS
+       * may use once firmware is gone. */
+      {
+	grub_efi_uintn_t off;
+	for (off = 0; off + desc_size <= mmap_size; off += desc_size)
+	  {
+	    grub_efi_memory_descriptor_t *d
+	      = (grub_efi_memory_descriptor_t *) ((grub_uint8_t *) memory_map + off);
+	    switch (d->type)
+	      {
+	      case GRUB_EFI_LOADER_CODE:
+	      case GRUB_EFI_LOADER_DATA:
+	      case GRUB_EFI_BOOT_SERVICES_CODE:
+	      case GRUB_EFI_BOOT_SERVICES_DATA:
+	      case GRUB_EFI_CONVENTIONAL_MEMORY:
+		ram_size += d->num_pages << 12;
+		break;
+	      default:
+		break;
+	      }
+	  }
+      }
       bp->common.efi_mmap_size = (grub_uint32_t) mmap_size;
       bp->common.efi_mem_desc_size = (grub_uint32_t) desc_size;
       bp->common.efi_mem_desc_version = desc_version;
@@ -190,13 +234,39 @@ grub_xnu_boot (void)
   bp->common.devtree = devtree_target;
   bp->common.devtreelen = (grub_uint32_t) devtreelen;
 
-  bp->common.heap_start = (grub_xnu_ptr_t) grub_xnu_heap_target_start;
+  bp->common.heap_start = (grub_uint32_t) grub_xnu_heap_target_start;
   bp->common.heap_size = (grub_uint32_t) grub_xnu_heap_size;
 
-  bp->ram_size = 0; /* filled by the kernel from ACPI/FDT, not inferred here */
-  bp->fsbfreq = 0;
+  /* Physical address of the EFI system table, as i386 fills it: how a
+   * kernel on a standard platform finds ACPI or the FDT through the
+   * configuration table. */
+  bp->efi_system_table = (grub_uint32_t) (grub_addr_t) grub_efi_system_table;
+  bp->ram_size = ram_size;
+  /* i386 measures the FSB; the arm64 counterpart is the generic timer's
+   * frequency, which firmware has already programmed. */
+  {
+    grub_uint64_t frq;
+    __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (frq));
+    bp->fsbfreq = frq;
+  }
 
-  stack_top = grub_xnu_heap_target_start + grub_xnu_heap_size + GRUB_XNU_PAGESIZE;
+  if (!fits32 ((grub_addr_t) grub_efi_system_table)
+      || !fits32 (grub_xnu_heap_target_start + grub_xnu_heap_size))
+    return grub_error (GRUB_ERR_BAD_OS,
+		       "boot parameters need addresses below 4 GiB");
+
+  /* i386 puts the stack one page above the heap's end without owning
+   * that page; here the stack pages are claimed from the heap so EFI
+   * has handed them over too. heap_size above deliberately excludes it. */
+  {
+    void *stack_in;
+    grub_addr_t stack_target;
+    grub_xnu_align_heap (GRUB_XNU_PAGESIZE);
+    if (grub_xnu_heap_malloc (GRUB_XNU_ARM64_STACK_SIZE, &stack_in,
+			      &stack_target))
+      return grub_errno;
+    stack_top = stack_target + GRUB_XNU_ARM64_STACK_SIZE;
+  }
 
   return xnu_leave_firmware_and_enter (bootparams_target, stack_top);
 }
@@ -308,6 +378,7 @@ grub_cpu_xnu_init (void)
  * Neither is a behaviour change: one is a memcpy the compiler would
  * have emitted anyway, the other is state this port does not use. */
 
+#ifndef GRUB_XNU_HAVE_MEMCPY
 void *
 grub_memcpy (void *dest, const void *src, grub_size_t n)
 {
@@ -319,6 +390,7 @@ grub_memcpy (void *dest, const void *src, grub_size_t n)
 
   return dest;
 }
+#endif
 
 grub_xnu_ptr_t grub_xnu_stack;
 
@@ -342,4 +414,37 @@ grub_xnu_boot_resume (void)
 void
 grub_cpu_xnu_fini (void)
 {
+}
+
+#define ARM_THREAD_STATE64 6
+/* flavor, count, then x0..x28, fp, lr, sp: pc is the 33rd word. */
+#define ARM_THREAD_STATE64_PC_OFFSET (16 + 32 * 8)
+
+grub_uint64_t
+grub_xnu_arm64_get_entry_point64 (struct grub_macho_file *macho,
+				  const char *filename __attribute__ ((unused)))
+{
+  grub_uint8_t *p = macho->cmds64;
+  grub_uint8_t *end = p + macho->cmdsize64;
+  int i;
+
+  if (!p)
+    return 0;
+  for (i = 0; i < macho->ncmds64 && p + 8 <= end; i++)
+    {
+      grub_uint32_t cmd = ((grub_uint32_t *) p)[0];
+      grub_uint32_t size = ((grub_uint32_t *) p)[1];
+      if (size < 8 || p + size > end)
+	return 0;
+      if (cmd == GRUB_MACHO_CMD_THREAD
+	  && size >= ARM_THREAD_STATE64_PC_OFFSET + 8
+	  && ((grub_uint32_t *) p)[2] == ARM_THREAD_STATE64)
+	{
+	  grub_uint64_t pc;
+	  grub_memcpy (&pc, p + ARM_THREAD_STATE64_PC_OFFSET, sizeof (pc));
+	  return pc;
+	}
+      p += size;
+    }
+  return 0;
 }

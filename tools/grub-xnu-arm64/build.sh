@@ -24,6 +24,10 @@ set -e
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 GRUB_SRC=${GRUB_SRC:?set GRUB_SRC to a GRUB source tree}
+if ! grep -q GRUB_XNU_GET_ENTRY_POINT64 "$GRUB_SRC/grub-core/loader/xnu.c"; then
+  echo "build.sh: run prepare-src.sh on $GRUB_SRC first" >&2
+  exit 1
+fi
 GRUB_DEPS=${GRUB_DEPS:?set GRUB_DEPS to the dir holding grub-efi-arm64-bin}
 AARCH64_GCC=${AARCH64_GCC:?set AARCH64_GCC to an aarch64 cross gcc}
 LD_LLD=${LD_LLD:-ld.lld}
@@ -42,6 +46,11 @@ CFLAGS="-ffreestanding -nostdlib -Os -fno-builtin -fno-stack-protector
         -mno-outline-atomics -fshort-wchar
         -DGRUB_MACHINE_EFI=1 -D__aarch64__=1
         -I$OUT/shim -I$HERE -I$GRUB_SRC/include -I$GRUB_SRC -I$OUT"
+# The source tree's misc.h decides whether grub_memcpy already exists
+# (2.12 defines it inline); the module only carries its own otherwise.
+if grep -q '^grub_memcpy (void' "$GRUB_SRC/include/grub/misc.h"; then
+  CFLAGS="$CFLAGS -DGRUB_XNU_HAVE_MEMCPY"
+fi
 
 cc1() { # <source> <grub-file-name> <output>
   # shellcheck disable=SC2086
@@ -85,8 +94,15 @@ R_AARCH64_LD64_GOT_LO12_NC
 R_AARCH64_ADR_PREL_PG_HI21"
 
 printf '%s\n' "$SUPPORTED" | sort -u > "$OUT/supported-relocs.txt"
-${READELF:-readelf} -rW "$OUT/xnu.mod" | awk '{print $3}' | grep '^R_' \
-  | sort -u > "$OUT/mine-relocs.txt"
+# READELF defaults to the llvm-readelf beside OBJCOPY. A missing readelf
+# must fail loudly: an empty pipeline here reads as "no bad relocations".
+READELF=${READELF:-$(dirname "$OBJCOPY")/llvm-readelf}
+"$READELF" -rW "$OUT/xnu.mod" > "$OUT/relocs.txt"
+awk '{print $3}' "$OUT/relocs.txt" | grep '^R_' | sort -u > "$OUT/mine-relocs.txt"
+if [ ! -s "$OUT/mine-relocs.txt" ]; then
+  echo "no relocations read from $OUT/xnu.mod -- is $READELF working?" >&2
+  exit 1
+fi
 BAD=$(comm -23 "$OUT/mine-relocs.txt" "$OUT/supported-relocs.txt")
 if [ -n "$BAD" ]; then
   echo "unsupported relocation types (kern/arm64/dl.c cannot apply these):" >&2

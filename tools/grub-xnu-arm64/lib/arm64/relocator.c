@@ -126,18 +126,39 @@ grub_relocator_alloc_chunk_addr (struct grub_relocator *rel,
    * with a page-aligned target is the "MAP_FIXED" of EFI; a failure here
    * is a real failure (something else owns that memory), not something
    * to paper over by allocating elsewhere -- the portable loader has
-   * already computed target addresses that its own kernel expects. */
-  if (grub_efi_allocate_pages_real (target,
-				    (size + 4095) / 4096,
-				    GRUB_EFI_ALLOCATE_ADDRESS,
-				    GRUB_EFI_LOADER_DATA) == 0)
-    {
-      grub_free (c);
-      return grub_error (GRUB_ERR_OUT_OF_MEMORY,
-			 "cannot allocate 0x%llx bytes at 0x%llx",
-			 (unsigned long long) size,
-			 (unsigned long long) target);
-    }
+   * already computed target addresses that its own kernel expects.
+   *
+   * The portable heap hands out byte-granular, back-to-back chunks
+   * (grub_xnu_heap_malloc), so consecutive chunks routinely share a page.
+   * EFI owns memory in pages: only the pages no earlier chunk covers are
+   * requested. Allocated as LoaderCode because this memory is the
+   * kernel's text as much as its data. */
+  {
+    grub_addr_t page;
+    grub_addr_t first = ALIGN_DOWN (target, 4096);
+    grub_addr_t last = ALIGN_UP (target + size, 4096);
+
+    for (page = first; page < last; page += 4096)
+      {
+	struct grub_relocator_chunk *o;
+	int owned = 0;
+
+	for (o = rel->chunks; o && !owned; o = o->next)
+	  owned = page >= ALIGN_DOWN (o->target, 4096)
+	    && page < ALIGN_UP (o->target + o->size, 4096);
+	if (owned)
+	  continue;
+	if (grub_efi_allocate_pages_real (page, 1, GRUB_EFI_ALLOCATE_ADDRESS,
+					  GRUB_EFI_LOADER_CODE) == 0)
+	  {
+	    grub_free (c);
+	    return grub_error (GRUB_ERR_OUT_OF_MEMORY,
+			       "cannot allocate 0x%llx bytes at 0x%llx",
+			       (unsigned long long) size,
+			       (unsigned long long) target);
+	  }
+      }
+  }
   (void) phys;
 
   /* Under EFI at this stage the mapping is identity and the pages are
@@ -179,8 +200,6 @@ grub_relocator64_boot (struct grub_relocator *rel,
 		       struct grub_relocator64_state state,
 		       int avoid_efi_boot_services)
 {
-  (void) rel;
-
   if (avoid_efi_boot_services == 0)
     {
       grub_efi_uintn_t size = 0;
@@ -200,6 +219,24 @@ grub_relocator64_boot (struct grub_relocator *rel,
 	return grub_error (GRUB_ERR_BAD_OS,
 			   "ExitBootServices failed; firmware still owns the machine");
     }
+
+  /* The kernel is entered with the MMU and data cache off, so
+   * everything it will read -- every chunk GRUB wrote -- has to be at
+   * the point of coherency first. */
+  {
+    struct grub_relocator_chunk *c;
+    state.clean_start = ~(grub_uint64_t) 0;
+    state.clean_end = 0;
+    for (c = rel->chunks; c; c = c->next)
+      {
+	if (c->target < state.clean_start)
+	  state.clean_start = c->target;
+	if (c->target + c->size > state.clean_end)
+	  state.clean_end = c->target + c->size;
+      }
+    if (state.clean_end == 0)
+      state.clean_start = 0;
+  }
 
   /* Never returns. */
   grub_relocator64_boot_asm (&state);

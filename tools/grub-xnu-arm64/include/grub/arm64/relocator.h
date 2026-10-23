@@ -47,6 +47,11 @@ struct grub_relocator64_state
   grub_uint64_t x3;
   grub_uint64_t sp;
   grub_uint64_t pc;
+  /* [clean_start, clean_end): the loaded image's extent, cleaned to the
+   * point of coherency before the MMU and data cache are turned off.
+   * Filled in by grub_relocator64_boot, not by its callers. */
+  grub_uint64_t clean_start;
+  grub_uint64_t clean_end;
 };
 
 /* Enters the state described, never returning on success. When
