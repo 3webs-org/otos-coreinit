@@ -120,3 +120,9 @@ uint64_t topology_timer_hint(const topology_t *t);
 /* The CLUSTER_ARCH_* value (see cluster_scheduler.h) this node joins the
  * cluster scheduler as. */
 uint64_t topology_cluster_arch(void);
+
+/* ARM-only ACPI discovery: FADT ARM_BOOT_ARCH declares whether PSCI is
+ * available and which HVC/SMC conduit firmware accepts. Returns 0 when the
+ * RSDP/FADT is absent, invalid, or not PSCI-compliant. Implemented only
+ * by topology_aarch64.c; smp_aarch64.c calls it on ACPI-only platforms. */
+int topology_aarch64_psci_method(uint64_t rsdp_phys, int *out_use_hvc);

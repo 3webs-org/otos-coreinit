@@ -186,6 +186,31 @@ static const acpi_sdt_t *acpi_find(const acpi_rsdp_t *rsdp, const char *sig)
     return NULL;
 }
 
+int topology_aarch64_psci_method(uint64_t rsdp_phys, int *out_use_hvc)
+{
+    if (!rsdp_phys || !is_rsdp(rsdp_phys)) {
+        return 0;
+    }
+    const acpi_rsdp_t *rsdp = (const acpi_rsdp_t *)(uintptr_t)rsdp_phys;
+    if (rsdp->revision < 2 || rsdp->length < sizeof(*rsdp) ||
+        rsdp->length > 4096 || acpi_sum(rsdp, rsdp->length) != 0) {
+        return 0;
+    }
+    const acpi_sdt_t *fadt = acpi_find(rsdp, "FACP");
+    /* ARM_BOOT_ARCH, introduced with ACPI 5.0: bit 0 = PSCI compliant;
+     * bit 1 = PSCI_USE_HVC (otherwise SMC). Offset 129 is relative to
+     * the beginning of FADT, not its body after the 36-byte SDT header. */
+    if (!fadt || fadt->revision < 5 || fadt->length < 131) {
+        return 0;
+    }
+    uint16_t flags = (uint16_t)le_read((const uint8_t *)fadt + 129, 2);
+    if (!(flags & 1u)) {
+        return 0;
+    }
+    *out_use_hvc = (flags & 2u) != 0;
+    return 1;
+}
+
 static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
 {
     const acpi_rsdp_t *rsdp = (const acpi_rsdp_t *)(uintptr_t)rsdp_phys;

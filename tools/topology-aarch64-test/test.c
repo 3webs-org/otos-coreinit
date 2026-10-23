@@ -27,4 +27,23 @@ int main(int argc,char**argv){
   struct init_boot_info bi={0}; bi.early_rsdp_phys=(uint64_t)r;
   static topology_t t; int ok=topology_discover(&t, topology_boot_hint(&bi));
   int good = ok && t.count==4 && t.cores[3].target==3 && t.cores[0].enabled && gs==0x9000000 && gi==0x8000000 && gicc==0x8010000 && gc==(void*)0x8000000 && t.arch_opaque[3]==0;
+  int use_hvc = -1;
+  good &= topology_aarch64_psci_method((uint64_t)r, &use_hvc) && use_hvc == 1;
+  int fadt_found=0;
+  for (uint32_t i=0;i<(l-36)/8;i++) {
+    uint64_t addr;
+    memcpy(&addr,xs+36+8*i,8);
+    uint8_t *fadt=(uint8_t*)(uintptr_t)addr;
+    if (memcmp(fadt,"FACP",4)) continue;
+    fadt_found=1;
+    uint32_t len=*(uint32_t*)(fadt+4);
+    uint8_t original=fadt[129];
+    fadt[129]=0; FIX(fadt,len,9);
+    good &= !topology_aarch64_psci_method((uint64_t)r,&use_hvc);
+    fadt[129]=1; FIX(fadt,len,9);
+    good &= topology_aarch64_psci_method((uint64_t)r,&use_hvc) && use_hvc==0;
+    fadt[129]=original; FIX(fadt,len,9);
+    break;
+  }
+  good &= fadt_found;
   printf("ok=%d count=%zu %s\n",ok,t.count,good?"HOSTTEST PASS":"HOSTTEST FAIL"); return !good;}

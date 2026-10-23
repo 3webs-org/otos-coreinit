@@ -32,6 +32,7 @@
  * this one is the standard 0.2 value, which is also the only version this
  * file claims to speak. */
 #define PSCI_FUNC_VERSION 0x84000000u
+#define PSCI_FUNC_CPU_ON_64 0xC4000003u  /* ACPI 5+ PSCI, 64-bit entry */
 
 /* Every PSCI call reports success as 0 in the first return register. */
 #define PSCI_SUCCESS 0
@@ -209,26 +210,28 @@ void smp_bring_up_all(const topology_t *topo,
         return;
     }
 
-    /* /psci lives in the device tree, so this backend needs the blob's
-     * address -- and smp_bring_up_all's signature carries the topology, not
-     * the DTB pointer. topology_aarch64.c records arch_hint in
-     * arch_opaque[3] for exactly this reason. */
-    if (topo->arch_opaque[3] == 0) {
-        kprintf("[coreinit]   smp: no DTB recorded in the topology "
-                "(arch_opaque[3] == 0), cannot find /psci -- cannot bring "
-                "up additional cores\n");
-        return;
-    }
-    const void *blob = (const void *)(uintptr_t)topo->arch_opaque[3];
-
     int use_hvc = 0;
     uint64_t cpu_on_fid = 0;
-    if (!psci_parse(blob, &use_hvc, &cpu_on_fid)) {
-        kprintf("[coreinit]   smp: no usable /psci node in the DTB -- this "
-                "platform's firmware does not offer PSCI the way this "
-                "backend needs it, so no additional cores will be brought "
-                "up (single-core boot continues normally)\n");
-        return;
+    if (topo->arch_opaque[3] != 0) {
+        /* DTB boot: /psci declares both conduit and CPU_ON function ID. */
+        const void *blob = (const void *)(uintptr_t)topo->arch_opaque[3];
+        if (!psci_parse(blob, &use_hvc, &cpu_on_fid)) {
+            kprintf("[coreinit]   smp: no usable /psci node in the DTB -- "
+                    "continuing on the BSP\n");
+            return;
+        }
+    } else {
+        /* ACPI boot: FADT ARM_BOOT_ARCH declares PSCI compliance and the
+         * conduit. CPU_ON is the standard PSCI 0.2+ 64-bit function ID;
+         * unlike DT, ACPI does not carry an explicit function ID. */
+        if (!topology_aarch64_psci_method(info->early_rsdp_phys, &use_hvc)) {
+            kprintf("[coreinit]   smp: no PSCI-compliant FADT -- continuing "
+                    "on the BSP\n");
+            return;
+        }
+        cpu_on_fid = PSCI_FUNC_CPU_ON_64;
+        kprintf("[coreinit]   smp: PSCI via ACPI FADT (%s conduit)\n",
+                use_hvc ? "hvc" : "smc");
     }
 
     /* Ask firmware which PSCI it speaks before relying on its semantics:
