@@ -51,3 +51,10 @@ uint64_t irq_get_tick_count(void);
  * by lapic_timer.c, pagefault.c, and cross_core_signal.c to add their
  * own vectors without needing a second, separate table. */
 void irq_install_handler(int vector, void *handler_addr);
+
+#if defined(__x86_64__)
+/* A trusted ring-dropping wrapper owns the INT80/BP handlers and entry
+ * stack. This architecture backend only installs their hardware gates. */
+int irq_x86_64_install_wrapper(void *invoke_handler, void *exit_handler,
+                               uint64_t ring0_stack_top);
+#endif

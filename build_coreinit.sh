@@ -171,6 +171,12 @@ if [ "$ARCH" = "aarch64" ]; then
     "$CC" -target "$TARGET" -c "$ROOT/securinit/arm_wrapper_aarch64.S" \
         -o "$BUILD/securinit_arm_wrapper_asm.o"
     SECURINIT_ARCH_OBJS="$BUILD/securinit_arm_wrapper.o $BUILD/securinit_arm_wrapper_asm.o"
+elif [ "$ARCH" = "x86_64" ]; then
+    "$CC" $CFLAGS -I"$BUILD/securinit-generated" \
+        -c "$ROOT/securinit/x86_wrapper.c" -o "$BUILD/securinit_x86_wrapper.o"
+    "$CC" -target "$TARGET" -c "$ROOT/securinit/x86_wrapper_x86_64.S" \
+        -o "$BUILD/securinit_x86_wrapper_asm.o"
+    SECURINIT_ARCH_OBJS="$BUILD/securinit_x86_wrapper.o $BUILD/securinit_x86_wrapper_asm.o"
 fi
 "$LD64" -arch "$LD_ARCH" -platform_version macos 10.12 10.12 \
     -e _securinit_main -pagezero_size 0 -o "$BUILD/securinit.macho" \

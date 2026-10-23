@@ -20,8 +20,12 @@ at privileged Admin memory before dereferencing either, then copies a bounded
 flat Cap'n Proto request/response through its trusted Gate capability for the
 only granted endpoint. BRK returns to the wrapper in EL1. QEMU checks the
 Admin FAR, two SVC exceptions, the forwarded IPC marker, and EL1 return.
-This is a one-shot isolated probe, not a long-lived untrusted service. The
-x86 wrapper still runs entirely in ring 0.
+This is a one-shot isolated probe, not a long-lived untrusted service. On
+x86 the wrapper now owns a CPL3 code/data mapping, its TSS.rsp0 and DPL3
+INT80/INT3 entries. QEMU verifies a user #PF on Admin with CR2=Admin, then
+two wrapper-owned INT80 interceptions and an INT3 return to ring 0. INT80
+currently rejects even the granted Gate endpoint on x86; bounded outbound
+Cap'n Proto forwarding remains the next unit on that architecture.
 
 This is **not full authorization yet**. The privileged kernel and wrapper
 stage still hold native handles and handler pointers; only the one tested

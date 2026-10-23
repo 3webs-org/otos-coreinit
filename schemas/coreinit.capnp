@@ -108,3 +108,10 @@ interface IrqManager {
 interface El0ExceptionRouter {
   bind @0 (handler :UInt64) -> (ok :UInt64);
 }
+
+# A trusted x86 wrapper owns the ring-3 entry and invoke override. Coreinit
+# only installs the hardware IDT/TSS routes and keeps existing IRQ/#PF gates.
+interface Ring3ExceptionRouter {
+  bind @0 (invokeEntry :UInt64, exitEntry :UInt64, trustedStack :UInt64,
+    faultHook :UInt64) -> (ok :UInt64);
+}

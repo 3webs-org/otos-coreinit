@@ -24,8 +24,10 @@ struct securinit_boot_info {
     uint64_t user_region_base;
     uint64_t user_region_size;
     uint64_t ttbr0_root_phys;
+    uint64_t x86_pml4_phys;
 };
 
 #define SECURINIT_BOOT_MARKER 0x5345435552494e49ull
 #define SECURINIT_EL0_DENIED_MARKER 0x454c3044454e4945ull
 #define SECURINIT_EL0_IPC_MARKER 0x454c304950434d4bull
+#define SECURINIT_RING3_DENIED_MARKER 0x523344454e494544ull

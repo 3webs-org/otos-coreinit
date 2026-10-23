@@ -111,6 +111,15 @@ uint64_t pagefault_get_count(void);
  * the page table says before/after an operation. */
 uint64_t pagefault_debug_read_pte(uint64_t pml4_phys, uint64_t addr);
 
+#if defined(__x86_64__)
+/* The ring-dropping wrapper owns user #PF policy. The x86 backend routes
+ * user faults through this trusted callback before its STREAM/COW logic.
+ * frame[0..4] = RIP, CS, RFLAGS, user RSP, user SS. */
+typedef int (*pagefault_ring3_hook_t)(uint64_t *frame,
+                                      uint64_t error_code, uint64_t cr2);
+void pagefault_x86_64_set_ring3_hook(pagefault_ring3_hook_t hook);
+#endif
+
 #if defined(__aarch64__)
 /* A trusted wrapper object registers its OWN lower-EL synchronous policy
  * callback through a factory-created exception-router object. The hardware

@@ -29,6 +29,12 @@ static size_t g_cow_pool_used = 0;
 
 static uint64_t g_fault_count = 0;
 static uint64_t g_cow_copy_count = 0;
+static pagefault_ring3_hook_t g_ring3_hook;
+
+void pagefault_x86_64_set_ring3_hook(pagefault_ring3_hook_t hook)
+{
+    __atomic_store_n(&g_ring3_hook, hook, __ATOMIC_RELEASE);
+}
 
 struct interrupt_frame {
     uint64_t ip;
@@ -231,6 +237,11 @@ __attribute__((interrupt)) static void isr_page_fault(struct interrupt_frame *fr
     uint64_t fault_addr;
     __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
 
+    pagefault_ring3_hook_t hook = __atomic_load_n(&g_ring3_hook, __ATOMIC_ACQUIRE);
+    if ((error_code & 4u) && hook &&
+        hook((uint64_t *)frame, error_code, fault_addr)) {
+        return; /* Wrapper handles the CPL3 fault and resumes/terminates. */
+    }
     uint64_t page_addr = fault_addr & ~0xFFFull;
     int was_present = (error_code & 0x1) != 0;
     int was_write = (error_code & 0x2) != 0;

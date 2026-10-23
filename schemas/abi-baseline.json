@@ -174,5 +174,6 @@
       null
     ]
   ],
-    "El0ExceptionRouter": [[0, 1, 1]]
+    "El0ExceptionRouter": [[0, 1, 1]],
+    "Ring3ExceptionRouter": [[0, 4, 1]]
 }

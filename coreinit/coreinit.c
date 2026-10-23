@@ -51,6 +51,10 @@
 extern const uint8_t securinit_image_start[];
 extern const uint8_t securinit_image_end[];
 
+#if defined(__x86_64__)
+static uint64_t g_boot_pml4_phys;
+#endif
+
 static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
                               const void *msg, size_t len, void *response,
                               size_t response_cap, size_t *out_response_len);
@@ -1001,6 +1005,8 @@ static void securinit_status_sink(void *data, uint32_t method_id,
         kprintf("[securinit] EL0 hardware denied access to Admin; wrapper regained EL1\n");
     } else if (marker == SECURINIT_EL0_IPC_MARKER) {
         kprintf("[securinit] EL0 outbound Cap'n Proto IPC traversed wrapper-owned Gate\n");
+    } else if (marker == SECURINIT_RING3_DENIED_MARKER) {
+        kprintf("[securinit] ring3 hardware denied access to Admin; wrapper regained ring0\n");
     }
 }
 
@@ -1020,6 +1026,24 @@ static void securinit_exception_router(void *data, uint32_t method_id,
     }
     *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
 }
+#elif defined(__x86_64__)
+static void securinit_ring3_router(void *data, uint32_t method_id,
+                                   const void *msg, size_t len, void *response,
+                                   size_t response_cap, size_t *out_response_len)
+{
+    (void)data;
+    (void)method_id;
+    (void)len;
+    const uint64_t *words = capnp_read_flat(msg);
+    uint64_t ok = irq_x86_64_install_wrapper((void *)(uintptr_t)words[0],
+                                               (void *)(uintptr_t)words[1],
+                                               words[2]);
+    if (ok && words[3]) {
+        pagefault_x86_64_set_ring3_hook(
+            (pagefault_ring3_hook_t)(uintptr_t)words[3]);
+    }
+    *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
+}
 #endif
 
 static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
@@ -1034,26 +1058,22 @@ static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
     int allocated = scheduler_allocate_slice(0x200000, RESOURCE_KIND_MEMORY,
                                               RESOURCE_SYNC_TRANSFER, self_job_id,
                                               &resource_id, &base);
-#if defined(__aarch64__)
-    /* The wrapper owns this isolated 2 MiB region, never the same L2 block
-     * as its own Mach-O. Claim it through the ordinary memory object. */
+    /* The wrapper owns a separate 2 MiB-aligned user region, never the
+     * same page-table block as its own privileged Mach-O. */
     const uint64_t user_region = ALLOC_MIN + 0x800000ull;
     uint64_t user_resource_id = 0;
     int user_allocated = allocated && scheduler_request_allocation(
         user_region, 0x200000, RESOURCE_KIND_MEMORY, RESOURCE_SYNC_TRANSFER,
         &user_resource_id);
-#endif
     scheduler_mutex_unlock(ALLOCATOR_MUTEX_ID, self_job_id);
     if (!allocated || !resource_id) {
         kprintf("[coreinit] securinit: could not claim an image region\n");
         return JOB_FINISHED;
     }
-#if defined(__aarch64__)
     if (!user_allocated || !user_resource_id) {
         kprintf("[coreinit] securinit: could not claim isolated user region\n");
         return JOB_FINISHED;
     }
-#endif
 
     size_t length = (size_t)(securinit_image_end - securinit_image_start);
     uint64_t entry = stage_load_macho(securinit_image_start, length, base,
@@ -1071,6 +1091,8 @@ static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
         .kernel_invoke = g_kernel_invoke,
         .factory = g_factory,
         .status_sink = sink,
+        .user_region_base = user_region,
+        .user_region_size = 0x200000,
     };
 #if defined(__aarch64__)
     capability_t router = create_object(securinit_exception_router, NULL,
@@ -1080,9 +1102,16 @@ static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
     }
     handoff.exception_router = router;
     handoff.exception_router_bind_method = EL0_EXCEPTION_ROUTER_METHOD_BIND;
-    handoff.user_region_base = user_region;
-    handoff.user_region_size = 0x200000;
     handoff.ttbr0_root_phys = arch_mmu_root_phys();
+#elif defined(__x86_64__)
+    capability_t router = create_object(securinit_ring3_router, NULL,
+                                        &g_ring3_exception_router_table, 0);
+    if (!router.handle) {
+        return JOB_FINISHED;
+    }
+    handoff.exception_router = router;
+    handoff.exception_router_bind_method = RING3_EXCEPTION_ROUTER_METHOD_BIND;
+    handoff.x86_pml4_phys = g_boot_pml4_phys;
 #endif
     uint64_t (*start)(const struct securinit_boot_info *) =
         (uint64_t (*)(const struct securinit_boot_info *))(uintptr_t)entry;
@@ -1148,6 +1177,9 @@ void coreinit_main(struct init_boot_info *info)
             (unsigned long long)arch_mmu_root_phys());
 #endif
     g_kernel_invoke = info->kernel_invoke;
+#if defined(__x86_64__)
+    g_boot_pml4_phys = info->pml4_phys;
+#endif
     g_factory = info->caps.factory;
     proxy_init(g_kernel_invoke, g_factory);
 

@@ -176,7 +176,7 @@ static tss64_t g_tss;
  * boot.S's own gdt64 already uses, so every existing selector constant
  * in this codebase stays valid without any other change; a new TSS
  * selector is added at 0x18. */
-static uint64_t g_gdt_with_tss[5] __attribute__((aligned(16)));
+static uint64_t g_gdt_with_tss[7] __attribute__((aligned(16)));
 
 __attribute__((interrupt)) static void isr_double_fault(
     struct interrupt_frame *frame, uint64_t error_code)
@@ -239,6 +239,10 @@ static void setup_tss_and_ist(void)
     uint64_t desc_high = (tss_base >> 32) & 0xFFFFFFFFull;
     g_gdt_with_tss[3] = desc_low;
     g_gdt_with_tss[4] = desc_high;
+    /* Ring-3 selectors exist on every core, but only a trusted wrapper
+     * object can install its own entry gate and TSS.rsp0 on the BSP. */
+    g_gdt_with_tss[5] = 0x00AFF2000000FFFFull; /* user data: 0x2B */
+    g_gdt_with_tss[6] = 0x00AFFA000000FFFFull; /* user code: 0x33 */
 
     idt_ptr_t gdt_ptr; /* same {limit, base} shape as idt_ptr_t -- reused
                         * rather than declaring an identical struct */
@@ -397,4 +401,21 @@ static void irq_mask_irq0(void)
 void irq_install_handler(int vector, void *handler_addr)
 {
     idt_set_gate(vector, handler_addr, KERNEL_CODE_SELECTOR, 0x8E);
+}
+
+int irq_x86_64_install_wrapper(void *invoke_handler, void *exit_handler,
+                               uint64_t ring0_stack_top)
+{
+    if (!invoke_handler || !exit_handler ||
+        !ring0_stack_top || (ring0_stack_top & 0xfu)) {
+        return 0;
+    }
+    /* The trusted wrapper owns both entry stubs and its ring-0 return
+     * stack. This hardware backend only exposes vector 0x80 to CPL3 and
+     * an INT3 exit route, preserving IRQ0/IRQ1 and #PF gates unchanged. */
+    g_tss.rsp0 = ring0_stack_top;
+    idt_set_gate(0x80, invoke_handler, KERNEL_CODE_SELECTOR, 0xEE);
+    idt_set_gate(3, exit_handler, KERNEL_CODE_SELECTOR, 0xEE);
+    __asm__ volatile("mfence" ::: "memory");
+    return 1;
 }
