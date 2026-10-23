@@ -201,31 +201,27 @@
 #define RESOURCE_MODE_TRANSFER 0
 #define RESOURCE_MODE_STREAM 1
 
-/* The cluster scheduler object's schema: a const table plus the index
- * of its object entry within it. Schemas are index-based const data
- * (see schema.h's own header comment for why: integer initialisers
- * need no relocation, so the whole tree is const and identical for
- * every kernel instance -- no runtime population, which is what let
- * the old *_build_schema calls disappear). create_object and
- * create_proxy take (table, index) pairs. */
-extern const schema_table_t g_cluster_scheduler_table;
+/* Generated const shapes/methods use indices and live in this image's
+ * read-only data. Each per-core descriptor is wired once to its own
+ * arrays before creating objects; no heap allocation or wire parsing. */
+extern schema_table_t g_cluster_scheduler_table;
 #define CS_SCHEMA_CLUSTER_SCHEDULER 0
 
 /* Every resource object shares this one schema -- exposed so a node
  * that only DISCOVERED a resource's handle (an AP reaching the shared
  * "serial" resource, say) can build a local proxy to it the same way
  * it already does for cluster_scheduler/mutex_manager. */
-extern const schema_table_t g_resource_table;
+extern schema_table_t g_resource_table;
 #define CS_SCHEMA_RESOURCE 0
 
 /* The other object schemas this file's own create paths use -- same
  * table-per-group layout, indices exported for completeness since the
  * proxy path may reference any of them. */
-extern const schema_table_t g_node_table;
+extern schema_table_t g_node_table;
 #define CS_SCHEMA_NODE 0
-extern const schema_table_t g_cs_mutex_table;
+extern schema_table_t g_cs_mutex_table;
 #define CS_SCHEMA_MUTEX 0
-extern const schema_table_t g_job_table;
+extern schema_table_t g_job_table;
 #define CS_SCHEMA_JOB 0
 void cluster_scheduler_handler(void *data, uint32_t method_id,
                                const void *msg, size_t len, void *response,

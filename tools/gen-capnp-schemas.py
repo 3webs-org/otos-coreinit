@@ -129,10 +129,12 @@ def emit(interfaces, output):
               "#pragma once", '#include "schema.h"', ""]
     source = ["/* Generated from schemas/coreinit.capnp; do not edit. */",
               '#include "generated_schemas.h"', ""]
+    initializers = []
+    header.append("void coreinit_schemas_init(void);")
     for interface in interfaces:
         symbol = interface["symbol"]
         prefix = snake(interface["name"])
-        header.append(f"extern const schema_table_t {symbol};")
+        header.append(f'extern schema_table_t {symbol} __attribute__((visibility("hidden")));')
         for method in interface["methods"]:
             macro = method_macro(interface["name"], method["name"])
             header.append(f"#define {macro} {method['id']}")
@@ -148,10 +150,23 @@ def emit(interfaces, output):
             source.append(f"    {{{method['id']}, {param}, {result_code}}}, /* {method['name']} */")
         source.extend(["};", f"static const object_schema_t {prefix}_objects[] = {{",
                        f"    {{0, {len(interface['methods'])}}},", "};",
-                       f"const schema_table_t {symbol} = {{",
-                       f"    {prefix}_structs, {len(interface['words'])}, NULL, 0,",
-                       f"    {prefix}_methods, {len(interface['methods'])}, {prefix}_objects, 1",
-                       "};", ""])
+                       f"schema_table_t {symbol};", ""])
+        initializers.extend([
+            f"    {symbol}.structs = {prefix}_structs;",
+            f"    {symbol}.struct_count = {len(interface['words'])};",
+            f"    {symbol}.pointers = NULL;",
+            f"    {symbol}.pointer_count = 0;",
+            f"    {symbol}.methods = {prefix}_methods;",
+            f"    {symbol}.method_count = {len(interface['methods'])};",
+            f"    {symbol}.objects = {prefix}_objects;",
+            f"    {symbol}.object_count = 1;",
+        ])
+    source.extend([
+        "/* The per-copy descriptor bridges point to this image's const arrays.",
+        " * Field-by-field stores make each address PC-relative in PIC code;",
+        " * no absolute pointer template is baked into the Mach-O image. */",
+        "void coreinit_schemas_init(void)", "{", *initializers, "}", "",
+    ])
     output.mkdir(parents=True, exist_ok=True)
     (output / "generated_schemas.h").write_text("\n".join(header) + "\n")
     (output / "generated_schemas.c").write_text("\n".join(source) + "\n")

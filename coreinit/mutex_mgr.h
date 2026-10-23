@@ -14,7 +14,7 @@
  * hardware with no arbitration at all, and whichever one runs last
  * silently wins. See irq_core_init's own use of the discovered hardware
  * mutex for how this actually gets used, not just published. */
-extern const schema_table_t g_mutex_manager_table;
+extern schema_table_t g_mutex_manager_table;
 #define MUTEX_MGR_SCHEMA_MUTEX_MANAGER 0
 void mutex_manager_handler(void *data, uint32_t method_id, const void *msg,
                            size_t len, void *response, size_t response_cap,

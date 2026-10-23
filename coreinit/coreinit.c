@@ -1001,6 +1001,11 @@ static void register_job_types(void)
 void coreinit_main(struct init_boot_info *info)
 {
     serial_init();
+    /* The Mach-O loader may place this instance at an AP-specific address.
+     * The generated arrays contain only const indices, while these static
+     * descriptor bridges must point to THIS copy's arrays. No heap or
+     * schema parsing is involved. */
+    coreinit_schemas_init();
     static topology_t topo;
     int have_topo = 0;
 #if defined(__aarch64__)

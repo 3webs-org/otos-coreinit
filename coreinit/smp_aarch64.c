@@ -42,6 +42,22 @@ static void write_u64(uint64_t addr, uint64_t val)
     mmio_write64((volatile void *)(uintptr_t)addr, val);
 }
 
+/* PSCI starts an AP with its data cache disabled. BSP stores to the copied
+ * image and discovery record may still be dirty in the BSP's cache, so
+ * clean each touched line to the point of coherency before CPU_ON. CTR_EL0
+ * DminLine is log2(words), hence 4 << DminLine bytes per line. */
+static void clean_to_poc(uint64_t base, uint64_t size)
+{
+    uint64_t ctr;
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    uint64_t line_size = 4ull << ((ctr >> 16) & 0xfu);
+    uint64_t first = base & ~(line_size - 1);
+    uint64_t end = base + size;
+    for (uint64_t addr = first; addr < end; addr += line_size) {
+        __asm__ volatile("dc cvac, %0" :: "r"(addr) : "memory");
+    }
+}
+
 /* Claims a region through the cluster scheduler's own
  * request_allocation (which wraps memory_manager's claim AND records node
  * attribution + a resource id) rather than calling memory_manager directly
@@ -382,6 +398,13 @@ void smp_bring_up_all(const topology_t *topo,
          * backend hands over as region_base, because that is the one value
          * the AP needs and the one it cannot obtain from anywhere else
          * (see the entry contract above). */
+        /* CPU_ON's AP begins with caches off. Make both the copied code
+         * (including its embedded init) and its discovery record visible
+         * in RAM before firmware can start executing the new core. */
+        clean_to_poc(region_base + CORE_KERNEL_OFFSET, info->kernel_image_len);
+        clean_to_poc(region_base + CORE_DISCOVERY_OFFSET,
+                     CORE_DISCOVERY_RSDP_OFF + sizeof(uint64_t));
+        __asm__ volatile("dsb sy\n\tisb" ::: "memory");
         uint64_t ret = psci_call(cpu_on_fid, target, entry, region_base, use_hvc);
         if (ret == PSCI_SUCCESS) {
             kprintf("[coreinit]   smp: mpidr=0x%llX brought up via PSCI "

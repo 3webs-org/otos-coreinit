@@ -54,6 +54,8 @@ with tempfile.TemporaryDirectory(prefix="coreinit-capnp-") as tmp:
         '  return 1;',
         '}',
         'int main(void) {',
+        '  if (g_resource_table.structs != NULL) return 2;',
+        '  coreinit_schemas_init();',
     ]
     for interface, methods in baseline.items():
         names = f"g_{''.join('_' + c.lower() if c.isupper() else c for c in interface).lstrip('_')}_table"
