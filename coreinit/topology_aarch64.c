@@ -27,11 +27,11 @@ static inline uint64_t read_mpidr(void)
 
 uint64_t topology_self_id(void)
 {
-    /* Return the MPIDR affinity value directly. The device tree's /cpus
-     * children declare their "reg" property in this same namespace, so
-     * this value can be matched against topology_t.cores[].target to
-     * identify which entry IS this core. */
-    return read_mpidr();
+    /* MPIDR_EL1 bit 31 is RES1 on this machine, not part of the affinity
+     * ID. ACPI GICC and FDT /cpus declare only Aff3:Aff2:Aff1:Aff0;
+     * strip MT/U/RES1 so the local ID matches those records and joins
+     * the same cluster-scheduler node. */
+    return read_mpidr() & 0xFF00FFFFFFull;
 }
 
 /* Helper to check if a node is enabled per device tree convention:
