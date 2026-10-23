@@ -90,18 +90,25 @@ with tempfile.TemporaryDirectory(prefix="coreinit-capnp-") as tmp:
 with tempfile.TemporaryDirectory(prefix="securinit-capnp-") as tmp:
     output = Path(tmp)
     run(sys.executable, str(GENERATOR), str(ROOT / "schemas/securinit.capnp"), str(output))
-    assert json.loads((output / "generated_schemas.json").read_text()) == {
-        "Status": [[0, 1, None]]
-    }
+    assert json.loads((output / "generated_schemas.json").read_text()) == json.loads(
+        (ROOT / "schemas/securinit-abi-baseline.json").read_text()
+    )
     check_c = output / "check.c"
     check_c.write_text('''#include "generated_schemas.h"
 int main(void) {
-    if (g_status_table.structs) return 1;
+    if (g_status_table.structs || g_gate_table.structs || g_admin_table.structs) return 1;
     securinit_schemas_init();
-    const method_schema_t *m = schema_method(&g_status_table, 0);
-    return !m || g_status_table.object_count != 1 ||
-           schema_struct(&g_status_table, m->param_schema)->data_words != 1 ||
-           m->result_schema != SCHEMA_IDX_NONE;
+    const method_schema_t *s = schema_method(&g_status_table, 0);
+    const method_schema_t *gate_call = schema_method(&g_gate_table, 0);
+    const method_schema_t *gate_stats = schema_method(&g_gate_table, 1);
+    const method_schema_t *admin = schema_method(&g_admin_table, 0);
+    return !s || !gate_call || !gate_stats || !admin ||
+           schema_struct(&g_status_table, s->param_schema)->data_words != 1 ||
+           s->result_schema != SCHEMA_IDX_NONE ||
+           g_gate_table.objects[0].method_count != 2 ||
+           schema_struct(&g_gate_table, gate_call->result_schema)->data_words != 1 ||
+           schema_struct(&g_gate_table, gate_stats->result_schema)->data_words != 2 ||
+           schema_struct(&g_admin_table, admin->result_schema)->data_words != 1;
 }
 ''')
     executable = output / "check"
@@ -109,4 +116,4 @@ int main(void) {
         str(output / "generated_schemas.c"), str(check_c), "-o", str(executable))
     run(str(executable))
 
-print("Cap'n Proto source → 11 generated object tables / 32 methods: ABI PASS")
+print("Cap'n Proto source → 13 generated object tables / 34 methods: ABI PASS")

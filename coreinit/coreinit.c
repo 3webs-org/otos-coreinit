@@ -22,6 +22,7 @@
 #include "cap.h"
 #include "capnp_build.h"
 #include "generated_schemas.h"
+#include "securinit-generated/generated_schemas.h"
 #include "cluster_scheduler.h"
 #include "arch_mmu.h"
 #include "cross_core_signal.h"
@@ -1031,9 +1032,25 @@ static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
     struct securinit_boot_info handoff = {g_kernel_invoke, g_factory, sink};
     uint64_t (*start)(const struct securinit_boot_info *) =
         (uint64_t (*)(const struct securinit_boot_info *))(uintptr_t)entry;
-    uint64_t status = start(&handoff);
-    kprintf("[coreinit] securinit image at 0x%llX, status object 0x%llX\n",
-            (unsigned long long)base, (unsigned long long)status);
+    uint64_t gate_handle = start(&handoff);
+    if (!gate_handle) {
+        kprintf("[coreinit] securinit: stage-2 object bootstrap failed\n");
+        return JOB_FINISHED;
+    }
+    kprintf("[coreinit] securinit image at 0x%llX, Gate object 0x%llX\n",
+            (unsigned long long)base, (unsigned long long)gate_handle);
+    uint64_t unused = 0;
+    uint8_t stats_req[24], stats_resp[40];
+    size_t req_len = capnp_build_flat(stats_req, sizeof(stats_req), &unused, 1);
+    size_t resp_len = 0;
+    capability_t gate = {gate_handle};
+    if (g_kernel_invoke(gate, GATE_METHOD_GET_STATS, stats_req, req_len,
+                        stats_resp, sizeof(stats_resp), &resp_len) &&
+        resp_len >= 32) {
+        const uint64_t *stats = capnp_read_flat(stats_resp);
+        kprintf("[securinit] Gate denied %llu request(s), forwarded %llu\n",
+                (unsigned long long)stats[0], (unsigned long long)stats[1]);
+    }
     return JOB_FINISHED;
 }
 
