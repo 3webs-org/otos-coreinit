@@ -61,6 +61,7 @@ case "$ARCH" in
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
             coreinit/kinv.c
+            coreinit/stage_loader.c
             coreinit/pagefault_x86_64.c
             coreinit/job_memory.c
             coreinit/job_exec.c
@@ -100,6 +101,7 @@ case "$ARCH" in
             coreinit/cluster_scheduler.c
             coreinit/proxy.c
             coreinit/kinv.c
+            coreinit/stage_loader.c
               coreinit/job_memory.c
               coreinit/job_exec.c
               coreinit/job_exec_aarch64.c
@@ -152,6 +154,22 @@ esac
 python3 "$ROOT/tools/gen-capnp-schemas.py" "$ROOT/schemas/coreinit.capnp" "$BUILD"
 "$CC" $CFLAGS -I"$BUILD" -c "$BUILD/generated_schemas.c" \
     -o "$BUILD/coreinit_generated_schemas.o"
+
+# Build stage 2 independently. Its object schemas live in its OWN Mach-O;
+# only the finished image bytes are embedded in coreinit below.
+python3 "$ROOT/tools/gen-capnp-schemas.py" "$ROOT/schemas/securinit.capnp" \
+    "$BUILD/securinit-generated"
+"$CC" $CFLAGS -I"$BUILD/securinit-generated" -c "$ROOT/securinit/securinit.c" \
+    -o "$BUILD/securinit_main.o"
+"$CC" $CFLAGS -I"$BUILD/securinit-generated" \
+    -c "$BUILD/securinit-generated/generated_schemas.c" \
+    -o "$BUILD/securinit_schemas.o"
+"$LD64" -arch "$LD_ARCH" -platform_version macos 10.12 10.12 \
+    -e _securinit_main -pagezero_size 0 -o "$BUILD/securinit.macho" \
+    "$BUILD/securinit_main.o" "$BUILD/securinit_schemas.o"
+"$CC" -target "$TARGET" \
+    -DSECURINIT_MACHO_PATH="\"$BUILD/securinit.macho\"" \
+    -c "$ROOT/coreinit/securinit_blob.S" -o "$BUILD/coreinit_securinit_blob.o"
 
 # Compile C sources
 for src in $SOURCES; do
@@ -253,7 +271,8 @@ done
     "$BUILD/coreinit_mutex_mgr.o" "$BUILD/coreinit_mem_mgr.o" \
     "$BUILD/coreinit_lapic_timer.o" "$BUILD/coreinit_scheduler.o" \
     "$BUILD/coreinit_cluster_scheduler.o" "$BUILD/coreinit_proxy.o" \
-    "$BUILD/coreinit_kinv.o" \
+    "$BUILD/coreinit_kinv.o" "$BUILD/coreinit_stage_loader.o" \
+    "$BUILD/coreinit_securinit_blob.o" \
     "$BUILD/coreinit_pagefault.o" "$BUILD/coreinit_job_memory.o" \
     "$BUILD/coreinit_job_exec.o" "$BUILD/coreinit_job_exec_switch.o" \
     "$BUILD/coreinit_cross_core_signal.o" "$BUILD/coreinit_arch_mmu.o" \

@@ -87,4 +87,26 @@ with tempfile.TemporaryDirectory(prefix="coreinit-capnp-") as tmp:
     assert "only named UInt64" in run(sys.executable, str(GENERATOR),
                                       str(bad_schema), str(bad_dir), expected=1).stderr
 
-print("Cap'n Proto source → 10 const C tables / 31 methods: ABI PASS")
+with tempfile.TemporaryDirectory(prefix="securinit-capnp-") as tmp:
+    output = Path(tmp)
+    run(sys.executable, str(GENERATOR), str(ROOT / "schemas/securinit.capnp"), str(output))
+    assert json.loads((output / "generated_schemas.json").read_text()) == {
+        "Status": [[0, 1, None]]
+    }
+    check_c = output / "check.c"
+    check_c.write_text('''#include "generated_schemas.h"
+int main(void) {
+    if (g_status_table.structs) return 1;
+    securinit_schemas_init();
+    const method_schema_t *m = schema_method(&g_status_table, 0);
+    return !m || g_status_table.object_count != 1 ||
+           schema_struct(&g_status_table, m->param_schema)->data_words != 1 ||
+           m->result_schema != SCHEMA_IDX_NONE;
+}
+''')
+    executable = output / "check"
+    run(compiler, "-std=c11", f"-I{output}", f"-I{SASKI_KERNEL}",
+        str(output / "generated_schemas.c"), str(check_c), "-o", str(executable))
+    run(str(executable))
+
+print("Cap'n Proto source → 11 generated object tables / 32 methods: ABI PASS")

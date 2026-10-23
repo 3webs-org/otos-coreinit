@@ -43,7 +43,8 @@ typedef enum {
     JOB_TYPE_PAGEFAULT_DEMO = 6,
     JOB_TYPE_STREAM_SETUP = 7,
     JOB_TYPE_STREAM_COW_VERIFY = 8,
-    JOB_TYPE_COUNT = 9,
+    JOB_TYPE_SECURINIT_BOOT = 9,
+    JOB_TYPE_COUNT = 10,
 } job_type_t;
 
 /* Registers the LOCAL function for a job type. Called once per node,

@@ -124,13 +124,13 @@ def abi(interfaces):
     }
 
 
-def emit(interfaces, output):
-    header = ["/* Generated from schemas/coreinit.capnp; do not edit. */",
+def emit(interfaces, output, namespace):
+    header = [f"/* Generated from schemas/{namespace}.capnp; do not edit. */",
               "#pragma once", '#include "schema.h"', ""]
-    source = ["/* Generated from schemas/coreinit.capnp; do not edit. */",
+    source = [f"/* Generated from schemas/{namespace}.capnp; do not edit. */",
               '#include "generated_schemas.h"', ""]
     initializers = []
-    header.append("void coreinit_schemas_init(void);")
+    header.append(f"void {namespace}_schemas_init(void);")
     for interface in interfaces:
         symbol = interface["symbol"]
         prefix = snake(interface["name"])
@@ -165,7 +165,7 @@ def emit(interfaces, output):
         "/* The per-copy descriptor bridges point to this image's const arrays.",
         " * Field-by-field stores make each address PC-relative in PIC code;",
         " * no absolute pointer template is baked into the Mach-O image. */",
-        "void coreinit_schemas_init(void)", "{", *initializers, "}", "",
+        f"void {namespace}_schemas_init(void)", "{", *initializers, "}", "",
     ])
     output.mkdir(parents=True, exist_ok=True)
     (output / "generated_schemas.h").write_text("\n".join(header) + "\n")
@@ -178,10 +178,11 @@ def main():
         fail("usage: gen-capnp-schemas.py schemas/coreinit.capnp <build-dir>")
     path, output = Path(sys.argv[1]), Path(sys.argv[2])
     interfaces = shapes(parse(path))
-    baseline = path.parent / "abi-baseline.json"
+    baseline_name = "abi-baseline.json" if path.stem == "coreinit" else f"{path.stem}-abi-baseline.json"
+    baseline = path.parent / baseline_name
     if baseline.exists() and abi(interfaces) != json.loads(baseline.read_text()):
-        fail("wire ABI differs from schemas/abi-baseline.json; review the protocol change")
-    emit(interfaces, output)
+        fail(f"wire ABI differs from schemas/{baseline_name}; review the protocol change")
+    emit(interfaces, output, path.stem)
 
 
 if __name__ == "__main__":

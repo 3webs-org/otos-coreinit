@@ -38,12 +38,17 @@
 #include "scheduler.h"
 #include "serial.h"
 #include "smp.h"
+#include "stage_loader.h"
+#include "../include/securinit_abi.h"
 #include "../include/init_abi.h"
 #include "../include/smp_layout.h"
 
 /* NOTE on mode64_token: see kernel/arch_x86_64.h's own comment for why
  * the kernel's copy of those primitives is gated. This file includes no
  * architecture-specific header at all -- nothing in it needs one. */
+
+extern const uint8_t securinit_image_start[];
+extern const uint8_t securinit_image_end[];
 
 static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
                               const void *msg, size_t len, void *response,
@@ -975,6 +980,63 @@ static job_result_t job_stream_cow_verify(void *ctx, uint64_t self_job_id,
     return JOB_FINISHED;
 }
 
+/* Stage-2 reports through an ordinary object, never a direct pointer to
+ * coreinit's serial formatter. Its own status object forwards this one
+ * boot marker through kernel_invoke, demonstrating the object-only seam. */
+static void securinit_status_sink(void *data, uint32_t method_id,
+                                 const void *msg, size_t len, void *response,
+                                 size_t response_cap, size_t *out_response_len)
+{
+    (void)data;
+    (void)method_id;
+    (void)len;
+    (void)response;
+    (void)response_cap;
+    *out_response_len = 0;
+    if (capnp_read_flat(msg)[0] == SECURINIT_BOOT_MARKER) {
+        kprintf("[securinit] stage 2 entered through the standard IPC object interface\n");
+    }
+}
+
+static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
+                                      uint64_t *out_block_id)
+{
+    (void)ctx;
+    if (!scheduler_mutex_try_lock(ALLOCATOR_MUTEX_ID, self_job_id)) {
+        *out_block_id = ALLOCATOR_MUTEX_ID;
+        return JOB_BLOCKED_ON_MUTEX;
+    }
+    uint64_t resource_id = 0, base = 0;
+    int allocated = scheduler_allocate_slice(0x200000, RESOURCE_KIND_MEMORY,
+                                              RESOURCE_SYNC_TRANSFER, self_job_id,
+                                              &resource_id, &base);
+    scheduler_mutex_unlock(ALLOCATOR_MUTEX_ID, self_job_id);
+    if (!allocated || !resource_id) {
+        kprintf("[coreinit] securinit: could not claim an image region\n");
+        return JOB_FINISHED;
+    }
+
+    size_t length = (size_t)(securinit_image_end - securinit_image_start);
+    uint64_t entry = stage_load_macho(securinit_image_start, length, base,
+                                       0x200000);
+    if (!entry) {
+        kprintf("[coreinit] securinit: invalid stage-2 Mach-O\n");
+        return JOB_FINISHED;
+    }
+    capability_t sink = create_object(securinit_status_sink, NULL,
+                                      &g_plain_table, PLAIN_SCHEMA_TICK_COUNTER);
+    if (!sink.handle) {
+        return JOB_FINISHED;
+    }
+    struct securinit_boot_info handoff = {g_kernel_invoke, g_factory, sink};
+    uint64_t (*start)(const struct securinit_boot_info *) =
+        (uint64_t (*)(const struct securinit_boot_info *))(uintptr_t)entry;
+    uint64_t status = start(&handoff);
+    kprintf("[coreinit] securinit image at 0x%llX, status object 0x%llX\n",
+            (unsigned long long)base, (unsigned long long)status);
+    return JOB_FINISHED;
+}
+
 /* Registers the identical set of (type, fn) pairs every core's
  * bootstrap uses -- see scheduler.h's own note on why this must be the
  * SAME set everywhere: a job_type value crossing a core boundary is
@@ -991,6 +1053,7 @@ static void register_job_types(void)
     scheduler_register_job_type(JOB_TYPE_STREAM_SETUP, job_stream_setup);
     scheduler_register_job_type(JOB_TYPE_STREAM_COW_VERIFY,
                                 job_stream_cow_verify);
+    scheduler_register_job_type(JOB_TYPE_SECURINIT_BOOT, job_securinit_boot);
 }
 
 void coreinit_main(struct init_boot_info *info)
@@ -1290,10 +1353,12 @@ void coreinit_main(struct init_boot_info *info)
                              RESOURCE_KIND_NONE, 0);
         }
 #endif
+        scheduler_submit(JOB_TYPE_SECURINIT_BOOT, NULL, 3, 0,
+                         RESOURCE_KIND_NONE, 0);
     }
 
-    kprintf("\n[coreinit] TODO: load securinit as the next stage and hand "
-            "off -- authorization/wrapping starts there, not here\n");
+    kprintf("\n[coreinit] securinit image queued after hardware bring-up; "
+            "authorization awaits a trusted isolation boundary\n");
 
     scheduler_run();
 }
