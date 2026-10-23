@@ -15,6 +15,10 @@
 #define GICD_ISENABLER      0x0100  /* Interrupt Set-Enable Registers */
 #define GICD_IPRIORITYR     0x0400  /* Interrupt Priority Registers (4 interrupts per register) */
 #define GICD_IROUTER        0x6000  /* Interrupt Routing Registers (GICv3, 8 bytes per interrupt) */
+#define GICC_CTLR           0x00    /* GICv2 CPU interface */
+#define GICC_PMR            0x04
+#define GICC_IAR            0x0c
+#define GICC_EOIR           0x10
 
 /* GICD_CTLR bits */
 #define GICD_CTLR_ENABLEGRP0    (1U << 0)  /* Enable Group 0 interrupts */
@@ -52,6 +56,7 @@ static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
  * with base==0 reports and returns rather than faulting on a null pointer
  * dereference. This mirrors the design in serial_aarch64.c. */
 static volatile uint8_t *g_gicd_base = NULL;
+static volatile uint8_t *g_gicc_base = NULL;
 
 /* Tick count incremented by the timer interrupt handler (once it exists).
  * Exposed via irq_get_tick_count() for LAPIC timer calibration on x86_64;
@@ -120,9 +125,17 @@ static void gic_distributor_init(void)
  * must call this during its own bring-up. */
 static void gic_cpu_interface_init(void)
 {
-    /* Enable system register access for the GIC CPU interface. On GICv3,
-     * this MUST be done first -- if SRE is not set, writes to other ICC_*
-     * registers are ignored or fault. */
+    if (g_gicc_base) {
+        /* GICv2's CPU interface is MMIO, not ICC_* system registers.
+         * Writing ICC_SRE_EL1 on QEMU virt's default GICv2 raises an
+         * Undefined Instruction exception. */
+        mmio_write32((volatile void *)(g_gicc_base + GICC_PMR), 0xff);
+        mmio_write32((volatile void *)(g_gicc_base + GICC_CTLR), 1);
+        kprintf("[coreinit]   irq: GICv2 CPU interface initialized\n");
+        return;
+    }
+
+    /* Enable system register access for the GICv3 CPU interface. */
     write_sysreg(ICC_SRE_EL1, ICC_SRE_EL1_SRE);
 
     /* Set the priority mask to 0xFF (lowest priority), which allows ALL
@@ -140,13 +153,6 @@ static void gic_cpu_interface_init(void)
     write_sysreg(ICC_BPR1_EL1, 0);
 
     kprintf("[coreinit]   irq: GIC CPU interface initialized\n");
-}
-
-/* Enable interrupts at the CPU level (clear the DAIF mask). This is the
- * aarch64 equivalent of x86_64's STI instruction. */
-static void enable_interrupts(void)
-{
-    __asm__ volatile("msr daifclr, #2" ::: "memory");  /* Clear the I bit (IRQ mask) */
 }
 
 /* GICv3 spurious interrupt ID range. When ICC_IAR1_EL1 returns a value in
@@ -177,6 +183,9 @@ static inline int irq_is_spurious(uint32_t irq_id)
  * defined here so the gap is visible and documented. */
 uint32_t irq_aarch64_acknowledge(void)
 {
+    if (g_gicc_base) {
+        return mmio_read32((const volatile void *)(g_gicc_base + GICC_IAR));
+    }
     return (uint32_t)read_sysreg(ICC_IAR1_EL1);
 }
 
@@ -194,6 +203,10 @@ uint32_t irq_aarch64_acknowledge(void)
  * documented. */
 void irq_aarch64_eoi(uint32_t irq_id)
 {
+    if (g_gicc_base) {
+        mmio_write32((volatile void *)(g_gicc_base + GICC_EOIR), irq_id);
+        return;
+    }
     write_sysreg(ICC_EOIR1_EL1, (uint64_t)irq_id);
 }
 
@@ -225,12 +238,11 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
     gic_distributor_init();
     gic_cpu_interface_init();
 
-    /* Enable interrupts at the CPU level. Individual interrupt sources are
-     * still masked in the distributor until irq_install_handler() enables
-     * them, so this is safe -- no spurious interrupts can arrive yet. */
-    enable_interrupts();
-
-    kprintf("[coreinit] irq_core_init: GIC initialized, interrupts enabled\n");
+    /* The exception-vector table has not been installed yet. Keep DAIF.I
+     * masked even after a handler is registered; otherwise the first timer
+     * interrupt vectors into firmware's stale handler instead of ours. */
+    kprintf("[coreinit] irq_core_init: GIC initialized; IRQs masked until "
+            "exception vectors are installed\n");
 }
 
 void irq_install_handler(int vector, void *handler_addr)
@@ -285,6 +297,11 @@ void irq_aarch64_set_base(uint64_t base)
     g_gicd_base = (volatile uint8_t *)(uintptr_t)base;
     kprintf("[coreinit]   irq: GIC distributor base set to 0x%llX\n",
            (unsigned long long)base);
+}
+
+void irq_aarch64_set_cpu_base(uint64_t base)
+{
+    g_gicc_base = (volatile uint8_t *)(uintptr_t)base;
 }
 
 /* The irq_manager object's handler and schema. This is the object-model

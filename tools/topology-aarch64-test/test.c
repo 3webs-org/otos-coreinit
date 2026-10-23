@@ -12,8 +12,8 @@
 #include <string.h>
 #include "coreinit/topology.h"
 void kprintf(const char *f, ...){va_list a;va_start(a,f);vprintf(f,a);va_end(a);}
-uint64_t gs, gi; void *gc;
-void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void cross_core_signal_aarch64_set_base(void*b){gc=b;}
+uint64_t gs, gi, gicc; void *gc;
+void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void irq_aarch64_set_cpu_base(uint64_t b){gicc=b;} void cross_core_signal_aarch64_set_base(void*b){gc=b;}
 int fdt_valid(const void*b,uint64_t s){return 0;}
 int main(int argc,char**argv){
   uint8_t *p=mmap(0,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
@@ -26,5 +26,5 @@ int main(int argc,char**argv){
   FIX(xs,l,9); FIX(r,36,32);
   struct init_boot_info bi={0}; bi.early_rsdp_phys=(uint64_t)r;
   static topology_t t; int ok=topology_discover(&t, topology_boot_hint(&bi));
-  int good = ok && t.count==4 && t.cores[3].target==3 && t.cores[0].enabled && gs==0x9000000 && gi==0x8000000 && gc==(void*)0x8000000 && t.arch_opaque[3]==0;
+  int good = ok && t.count==4 && t.cores[3].target==3 && t.cores[0].enabled && gs==0x9000000 && gi==0x8000000 && gicc==0x8010000 && gc==(void*)0x8000000 && t.arch_opaque[3]==0;
   printf("ok=%d count=%zu %s\n",ok,t.count,good?"HOSTTEST PASS":"HOSTTEST FAIL"); return !good;}

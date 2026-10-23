@@ -10,6 +10,7 @@
  * wiring point for this architecture) forward-declares them here. */
 void serial_aarch64_set_base(uint64_t base);
 void irq_aarch64_set_base(uint64_t base);
+void irq_aarch64_set_cpu_base(uint64_t base);
 void cross_core_signal_aarch64_set_base(void *base);
 
 /* Read MPIDR_EL1 (Multiprocessor Affinity Register) to get this core's
@@ -202,6 +203,8 @@ static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
     }
 
     size_t found = 0, enabled = 0;
+    uint64_t gicc_base = 0;
+    uint8_t gic_version = 0;
     const uint8_t *p = (const uint8_t *)madt + sizeof(acpi_sdt_t) + 8;
     const uint8_t *end = (const uint8_t *)madt + madt->length;
     while (p + 2 <= end) {
@@ -220,14 +223,23 @@ static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
              * are not part of the namespace topology_self_id compares in. */
             out->cores[found].target = le_read(p + 68, 8) & 0xFF00FFFFFFull;
             out->cores[found].enabled = (uint8_t)en;
+            if (en && gicc_base == 0) {
+                gicc_base = le_read(p + 32, 8);
+            }
             found++;
             enabled += (size_t)en;
         } else if (type == MADT_TYPE_GICD && len >= 16) {
             out->arch_opaque[1] = le_read(p + 8, 8);
+            if (len >= 21) {
+                gic_version = p[20];
+            }
         }
         p += len;
     }
     out->count = found;
+    if (gic_version == 2 && gicc_base != 0) {
+        irq_aarch64_set_cpu_base(gicc_base);
+    }
     kprintf("[coreinit]   topology: discovered %u cores (%u enabled)\n",
             (unsigned int)found, (unsigned int)enabled);
     if (out->arch_opaque[1] != 0) {
@@ -390,13 +402,23 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
         }
     }
 
-    /* Find GIC (try v3 first, fall back to generic "arm,gic") */
+    /* QEMU virt's default GICv2 advertises arm,cortex-a15-gic; v3
+     * advertises arm,gic-v3. The MSI-only arm,gic-v2m-frame is not a
+     * distributor and must not be mistaken for one. */
     int gic_offset = FDT_ERR_NODE;
-    if (!fdt_node_by_compatible(blob, "arm,gic-v3", &gic_offset)) {
+    int gic_v3 = fdt_node_by_compatible(blob, "arm,gic-v3", &gic_offset);
+    if (!gic_v3 &&
+        !fdt_node_by_compatible(blob, "arm,cortex-a15-gic", &gic_offset)) {
         fdt_node_by_compatible(blob, "arm,gic", &gic_offset);
     }
     if (gic_offset != FDT_ERR_NODE && node_enabled(blob, gic_offset)) {
         fdt_range_t gic_range;
+        if (!gic_v3) {
+            fdt_range_t cpu_range;
+            if (fdt_reg_to_cpu_addr(blob, gic_offset, 1, &cpu_range)) {
+                irq_aarch64_set_cpu_base(cpu_range.base);
+            }
+        }
         if (fdt_reg_to_cpu_addr(blob, gic_offset, 0, &gic_range)) {
             out->arch_opaque[1] = gic_range.base;
             kprintf("[coreinit]   topology: GIC distributor at 0x%llX\n",
