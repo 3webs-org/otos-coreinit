@@ -16,3 +16,10 @@ interface Gate {
 interface Admin {
   setAllowed @0 (allowed :UInt64) -> (ok :UInt64);
 }
+
+# Only securinit holds this factory capability. Creating a wrapped guest
+# owns the ring drop, user mapping and per-object invoke override. saski
+# supplies only its existing generic IPC primitive, not a trap backend.
+interface WrapperFactory {
+  create @0 (unused :UInt64) -> (ok :UInt64);
+}

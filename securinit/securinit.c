@@ -11,13 +11,16 @@
 
 static int (*g_invoke)(capability_t, uint32_t, const void *, size_t,
                        void *, size_t, size_t *);
-static capability_t g_sink, g_status;
+static capability_t g_sink, g_status, g_gate;
+static struct securinit_boot_info g_boot;
 static uint64_t g_allowed, g_denied, g_forwarded;
 static uint8_t g_status_record[CAP_RECORD_SIZE]
     __attribute__((aligned(CAP_RECORD_ALIGN)));
 static uint8_t g_gate_record[CAP_RECORD_SIZE]
     __attribute__((aligned(CAP_RECORD_ALIGN)));
 static uint8_t g_admin_record[CAP_RECORD_SIZE]
+    __attribute__((aligned(CAP_RECORD_ALIGN)));
+static uint8_t g_wrapper_factory_record[CAP_RECORD_SIZE]
     __attribute__((aligned(CAP_RECORD_ALIGN)));
 
 static capability_t create_stage_object(capability_t factory,
@@ -96,11 +99,40 @@ static void admin_handler(void *data, uint32_t method_id, const void *msg,
     *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
 }
 
+/* This factory-created object owns the ring drop and per-object invoke
+ * override. A caller never supplies native handler or Admin addresses;
+ * those remain trusted stage-local state. */
+static void wrapper_factory_handler(void *data, uint32_t method_id,
+                                    const void *msg, size_t len, void *response,
+                                    size_t response_cap, size_t *out_response_len)
+{
+    (void)data;
+    (void)method_id;
+    (void)msg;
+    (void)len;
+    uint64_t ok = 0;
+#if defined(__aarch64__)
+    if (g_boot.exception_router.handle) {
+        ok = securinit_arm_isolation_probe(&g_boot,
+                                            (uint64_t)(uintptr_t)g_admin_record,
+                                            g_gate);
+    }
+#elif defined(__x86_64__)
+    if (g_boot.exception_router.handle) {
+        ok = securinit_x86_isolation_probe(&g_boot,
+                                            (uint64_t)(uintptr_t)g_admin_record,
+                                            g_gate);
+    }
+#endif
+    *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
+}
+
 uint64_t securinit_main(const struct securinit_boot_info *info)
 {
     securinit_schemas_init();
     g_invoke = info->kernel_invoke;
     g_sink = info->status_sink;
+    g_boot = *info;
     __atomic_store_n(&g_allowed, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_denied, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_forwarded, 0, __ATOMIC_RELAXED);
@@ -111,9 +143,14 @@ uint64_t securinit_main(const struct securinit_boot_info *info)
                                              &g_gate_table, g_gate_record);
     capability_t admin = create_stage_object(info->factory, admin_handler,
                                               &g_admin_table, g_admin_record);
-    if (!g_status.handle || !gate.handle || !admin.handle) {
+    capability_t wrapper_factory = create_stage_object(
+        info->factory, wrapper_factory_handler, &g_wrapper_factory_table,
+        g_wrapper_factory_record);
+    if (!g_status.handle || !gate.handle || !admin.handle ||
+        !wrapper_factory.handle) {
         return 0;
     }
+    g_gate = gate;
 
     uint64_t marker = SECURINIT_BOOT_MARKER;
     uint8_t request[24], response[24];
@@ -138,34 +175,26 @@ uint64_t securinit_main(const struct securinit_boot_info *info)
         response_len < 24 || capnp_read_flat(response)[0] != 1) {
         return 0;
     }
+    if (info->exception_router.handle) {
+        uint64_t unused = 0;
+        request_len = capnp_build_flat(request, sizeof(request), &unused, 1);
+        response_len = 0;
+        if (!g_invoke(wrapper_factory, WRAPPER_FACTORY_METHOD_CREATE,
+                      request, request_len, response, sizeof(response),
+                      &response_len) || response_len < 24 ||
+            capnp_read_flat(response)[0] != 1) {
+            return 0;
+        }
 #if defined(__aarch64__)
-    if (info->exception_router.handle) {
-        if (!securinit_arm_isolation_probe(info,
-                                           (uint64_t)(uintptr_t)g_admin_record,
-                                           gate)) {
-            return 0;
-        }
         uint64_t proof = SECURINIT_EL0_DENIED_MARKER;
-        request_len = capnp_build_flat(request, sizeof(request), &proof, 1);
-        if (!g_invoke(g_status, STATUS_METHOD_REPORT, request, request_len,
-                      NULL, 0, &response_len)) {
-            return 0;
-        }
-    }
-#elif defined(__x86_64__)
-    if (info->exception_router.handle) {
-        if (!securinit_x86_isolation_probe(info,
-                                           (uint64_t)(uintptr_t)g_admin_record,
-                                           gate)) {
-            return 0;
-        }
+#else
         uint64_t proof = SECURINIT_RING3_DENIED_MARKER;
+#endif
         request_len = capnp_build_flat(request, sizeof(request), &proof, 1);
         if (!g_invoke(g_status, STATUS_METHOD_REPORT, request, request_len,
                       NULL, 0, &response_len)) {
             return 0;
         }
     }
-#endif
     return gate.handle; /* Admin remains private to this stage. */
 }

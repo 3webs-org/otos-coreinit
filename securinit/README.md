@@ -4,10 +4,14 @@
 coreinit job claims a region through the memory-manager object, loads the image,
 and passes only the factory capability, a status-sink capability, and the
 existing `kernel_invoke` bootstrap pointer. securinit creates Status, Gate,
-and Admin objects through the factory. Gate initially denies a report; an
+Admin and WrapperFactory objects through the factory. Gate initially denies
+a report; an
 Admin capability kept within the stage enables it, then Gate forwards the
-report through Status to coreinit's sink. Coreinit queries Gate's counters
-through IPC and sees one denial and one forwarding. No direct C symbol
+report through Status to coreinit's sink. WrapperFactory owns the guest page
+mapping, ring drop, local endpoint grant, and return path; securinit invokes
+its `create` method through IPC rather than transitioning from its entry
+function. Coreinit queries Gate's counters through IPC and sees one denial
+and two forwarded reports after the wrapped guest runs. No direct C symbol
 table or logger callback crosses the image boundary. These interfaces live
 in `schemas/securinit.capnp`, compiled into const index-based metadata at
 build time; per-image descriptor bridges are wired on entry.
