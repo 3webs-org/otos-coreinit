@@ -615,6 +615,14 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                "[coreinit]   cross_core_signal: handler installed, target "
                "%u, self-test...\n",
                (unsigned)cross_core_signal_my_target());
+#if defined(__aarch64__)
+    /* ARM has no installed exception vectors yet: DAIF.I stays masked.
+     * A self-SGI cannot be delivered, and WFI would block forever. The
+     * backend can send GICv2/v3 SGIs, but a receive-path test must wait
+     * until the vector table exists. */
+    job_kprintf(self_job_id, "[coreinit]   cross_core_signal: self-test "
+                "SKIPPED (no exception vectors)\n");
+#else
     g_cross_core_signal_test_seen = 0;
     cross_core_signal_send(cross_core_signal_my_target());
     /* A self-IPI via the Local APIC is delivered asynchronously, same
@@ -632,6 +640,7 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
     }
     job_kprintf(self_job_id, "[coreinit]   cross_core_signal: self-test %s\n",
                g_cross_core_signal_test_seen ? "PASS" : "FAIL");
+#endif
 
     capability_t irq_manager =
         create_object(irq_manager_handler, NULL, &g_irq_manager_table,

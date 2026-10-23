@@ -12,6 +12,7 @@ void serial_aarch64_set_base(uint64_t base);
 void irq_aarch64_set_base(uint64_t base);
 void irq_aarch64_set_cpu_base(uint64_t base);
 void cross_core_signal_aarch64_set_base(void *base);
+void cross_core_signal_aarch64_set_gic_v2(void);
 
 /* Read MPIDR_EL1 (Multiprocessor Affinity Register) to get this core's
  * own affinity identifier. This is the aarch64 equivalent of reading the
@@ -239,6 +240,7 @@ static int topology_discover_acpi(topology_t *out, uint64_t rsdp_phys)
     out->count = found;
     if (gic_version == 2 && gicc_base != 0) {
         irq_aarch64_set_cpu_base(gicc_base);
+        cross_core_signal_aarch64_set_gic_v2();
     }
     kprintf("[coreinit]   topology: discovered %u cores (%u enabled)\n",
             (unsigned int)found, (unsigned int)enabled);
@@ -417,6 +419,7 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
             fdt_range_t cpu_range;
             if (fdt_reg_to_cpu_addr(blob, gic_offset, 1, &cpu_range)) {
                 irq_aarch64_set_cpu_base(cpu_range.base);
+                cross_core_signal_aarch64_set_gic_v2();
             }
         }
         if (fdt_reg_to_cpu_addr(blob, gic_offset, 0, &gic_range)) {

@@ -13,7 +13,7 @@
 #include "coreinit/topology.h"
 void kprintf(const char *f, ...){va_list a;va_start(a,f);vprintf(f,a);va_end(a);}
 uint64_t gs, gi, gicc; void *gc;
-void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void irq_aarch64_set_cpu_base(uint64_t b){gicc=b;} void cross_core_signal_aarch64_set_base(void*b){gc=b;}
+void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void irq_aarch64_set_cpu_base(uint64_t b){gicc=b;} void cross_core_signal_aarch64_set_base(void*b){gc=b;} void cross_core_signal_aarch64_set_gic_v2(void){}
 int fdt_valid(const void*b,uint64_t s){return 0;}
 int main(int argc,char**argv){
   uint8_t *p=mmap(0,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);

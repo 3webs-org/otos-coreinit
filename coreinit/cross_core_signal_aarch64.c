@@ -24,6 +24,7 @@
  * the x86_64 backend keeps its own LAPIC_REG_* copy rather than leaning
  * on another file's private defines. */
 #define GICD_ISENABLER 0x0100
+#define GICD_SGIR       0x0f00  /* GICv2: target-list SGI generation */
 
 /* Handler to invoke when the SGI arrives on THIS core. Stored, not yet
  * called: see the note in cross_core_signal_install_handler(). */
@@ -34,6 +35,7 @@ static void (*g_handler)(void) = 0;
  * g_pl011_base. NULL means the distributor hasn't been configured yet,
  * in which case enabling SGI 0 is deferred rather than faulted on. */
 static volatile uint8_t *g_gicd_base = NULL;
+static int g_gic_v2 = 0;
 
 /* Set the distributor base so the SGI can actually be enabled in
  * hardware. Mirrors irq_aarch64_set_base()/serial_aarch64_set_base():
@@ -42,6 +44,11 @@ static volatile uint8_t *g_gicd_base = NULL;
 void cross_core_signal_aarch64_set_base(void *base)
 {
     g_gicd_base = (volatile uint8_t *)base;
+}
+
+void cross_core_signal_aarch64_set_gic_v2(void)
+{
+    g_gic_v2 = 1;
 }
 
 uint64_t cross_core_signal_my_target(void)
@@ -66,6 +73,16 @@ void cross_core_signal_send(uint64_t target)
     uint64_t aff1 = (target >> 8) & 0xFFull;   /* cluster              */
     uint64_t aff2 = (target >> 16) & 0xFFull;  /* chip                 */
     uint64_t aff3 = (target >> 32) & 0xFFull;  /* chip descriptor      */
+
+    if (g_gic_v2) {
+        /* GICv2 targets up to eight CPU interfaces via GICD_SGIR's
+         * CPUTargetList [23:16]. There is no ICC_SGI1R_EL1 on v2. */
+        if (g_gicd_base && aff0 < 8 && aff1 == 0 && aff2 == 0 && aff3 == 0) {
+            mmio_write32((volatile void *)(g_gicd_base + GICD_SGIR),
+                         (uint32_t)(1u << aff0) << 16);
+        }
+        return;
+    }
 
     /* ICC_SGI1R_EL1, field by field (the x86_64 backend comments its two
      * ICR writes the same way -- this is that register's equivalent):
