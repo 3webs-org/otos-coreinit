@@ -11,9 +11,9 @@
 
 static int (*g_invoke)(capability_t, uint32_t, const void *, size_t,
                        void *, size_t, size_t *);
-static capability_t g_sink, g_status, g_gate;
+static capability_t g_sink, g_status, g_gate, g_wrapped;
 static struct securinit_boot_info g_boot;
-static uint64_t g_allowed, g_denied, g_forwarded;
+static uint64_t g_allowed, g_denied, g_forwarded, g_probe_failures;
 static uint8_t g_status_record[CAP_RECORD_SIZE]
     __attribute__((aligned(CAP_RECORD_ALIGN)));
 static uint8_t g_gate_record[CAP_RECORD_SIZE]
@@ -21,6 +21,8 @@ static uint8_t g_gate_record[CAP_RECORD_SIZE]
 static uint8_t g_admin_record[CAP_RECORD_SIZE]
     __attribute__((aligned(CAP_RECORD_ALIGN)));
 static uint8_t g_wrapper_factory_record[CAP_RECORD_SIZE]
+    __attribute__((aligned(CAP_RECORD_ALIGN)));
+static uint8_t g_wrapped_record[CAP_RECORD_SIZE]
     __attribute__((aligned(CAP_RECORD_ALIGN)));
 
 static capability_t create_stage_object(capability_t factory,
@@ -99,9 +101,54 @@ static void admin_handler(void *data, uint32_t method_id, const void *msg,
     *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
 }
 
-/* This factory-created object owns the ring drop and per-object invoke
- * override. A caller never supplies native handler or Admin addresses;
- * those remain trusted stage-local state. */
+/* Every invocation enters a fresh isolated guest, then unmaps it before
+ * returning. The privileged Admin and underlying Status handles never
+ * enter its user region; only the wrapper-local Gate endpoint is granted. */
+static void wrapped_handler(void *data, uint32_t method_id, const void *msg,
+                            size_t len, void *response, size_t response_cap,
+                            size_t *out_response_len)
+{
+    (void)data;
+    (void)method_id;
+    (void)len;
+    uint64_t value = capnp_read_flat(msg)[0];
+    uint64_t forwarded = 0;
+    int ok = 0;
+#if defined(__aarch64__)
+    if (g_boot.exception_router.handle) {
+        ok = securinit_arm_isolation_probe(&g_boot,
+                                            (uint64_t)(uintptr_t)g_admin_record,
+                                            g_gate, value, &forwarded);
+    }
+#elif defined(__x86_64__)
+    if (g_boot.exception_router.handle) {
+        ok = securinit_x86_isolation_probe(&g_boot,
+                                            (uint64_t)(uintptr_t)g_admin_record,
+                                            g_gate, value, &forwarded);
+    }
+#endif
+    if (!ok) {
+        g_probe_failures++;
+    } else {
+#if defined(__aarch64__)
+        uint64_t proof = SECURINIT_EL0_DENIED_MARKER;
+#else
+        uint64_t proof = SECURINIT_RING3_DENIED_MARKER;
+#endif
+        uint8_t request[24];
+        size_t request_len = capnp_build_flat(request, sizeof(request), &proof, 1);
+        size_t ignored = 0;
+        if (!g_invoke(g_status, STATUS_METHOD_REPORT, request, request_len,
+                      NULL, 0, &ignored)) {
+            g_probe_failures++;
+        }
+    }
+    *out_response_len = capnp_build_flat(response, response_cap, &forwarded, 1);
+}
+
+/* This factory-created object owns the ring drop and invoke override.
+ * Only the trusted stage retains its capability; create publishes a
+ * WrappedObject, not native handler or Admin addresses supplied by caller. */
 static void wrapper_factory_handler(void *data, uint32_t method_id,
                                     const void *msg, size_t len, void *response,
                                     size_t response_cap, size_t *out_response_len)
@@ -110,21 +157,13 @@ static void wrapper_factory_handler(void *data, uint32_t method_id,
     (void)method_id;
     (void)msg;
     (void)len;
-    uint64_t ok = 0;
-#if defined(__aarch64__)
-    if (g_boot.exception_router.handle) {
-        ok = securinit_arm_isolation_probe(&g_boot,
-                                            (uint64_t)(uintptr_t)g_admin_record,
-                                            g_gate);
+    if (!g_wrapped.handle) {
+        g_wrapped = create_stage_object(g_boot.factory, wrapped_handler,
+                                         &g_wrapped_object_table,
+                                         g_wrapped_record);
     }
-#elif defined(__x86_64__)
-    if (g_boot.exception_router.handle) {
-        ok = securinit_x86_isolation_probe(&g_boot,
-                                            (uint64_t)(uintptr_t)g_admin_record,
-                                            g_gate);
-    }
-#endif
-    *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
+    uint64_t handle = g_wrapped.handle;
+    *out_response_len = capnp_build_flat(response, response_cap, &handle, 1);
 }
 
 uint64_t securinit_main(const struct securinit_boot_info *info)
@@ -133,6 +172,8 @@ uint64_t securinit_main(const struct securinit_boot_info *info)
     g_invoke = info->kernel_invoke;
     g_sink = info->status_sink;
     g_boot = *info;
+    g_wrapped.handle = 0;
+    g_probe_failures = 0;
     __atomic_store_n(&g_allowed, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_denied, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_forwarded, 0, __ATOMIC_RELAXED);
@@ -181,18 +222,34 @@ uint64_t securinit_main(const struct securinit_boot_info *info)
         response_len = 0;
         if (!g_invoke(wrapper_factory, WRAPPER_FACTORY_METHOD_CREATE,
                       request, request_len, response, sizeof(response),
-                      &response_len) || response_len < 24 ||
-            capnp_read_flat(response)[0] != 1) {
+                      &response_len) || response_len < 24) {
             return 0;
         }
+        capability_t wrapped = {capnp_read_flat(response)[0]};
+        if (!wrapped.handle) return 0;
 #if defined(__aarch64__)
-        uint64_t proof = SECURINIT_EL0_DENIED_MARKER;
+        uint64_t user_value = SECURINIT_EL0_IPC_MARKER;
 #else
-        uint64_t proof = SECURINIT_RING3_DENIED_MARKER;
+        uint64_t user_value = SECURINIT_RING3_IPC_MARKER;
 #endif
-        request_len = capnp_build_flat(request, sizeof(request), &proof, 1);
-        if (!g_invoke(g_status, STATUS_METHOD_REPORT, request, request_len,
-                      NULL, 0, &response_len)) {
+        request_len = capnp_build_flat(request, sizeof(request), &user_value, 1);
+        if (!g_invoke(wrapped, WRAPPED_OBJECT_METHOD_RUN, request, request_len,
+                      response, sizeof(response), &response_len) ||
+            response_len < 24 || capnp_read_flat(response)[0] != 1) {
+            return 0;
+        }
+        uint64_t revoke = 0;
+        request_len = capnp_build_flat(request, sizeof(request), &revoke, 1);
+        if (!g_invoke(admin, ADMIN_METHOD_SET_ALLOWED, request, request_len,
+                      response, sizeof(response), &response_len) ||
+            response_len < 24 || capnp_read_flat(response)[0] != 1) {
+            return 0;
+        }
+        request_len = capnp_build_flat(request, sizeof(request), &user_value, 1);
+        if (!g_invoke(wrapped, WRAPPED_OBJECT_METHOD_RUN, request, request_len,
+                      response, sizeof(response), &response_len) ||
+            response_len < 24 || capnp_read_flat(response)[0] != 0 ||
+            g_probe_failures != 0) {
             return 0;
         }
     }

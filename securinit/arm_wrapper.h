@@ -8,5 +8,6 @@
  * frame and forwards exceptions to this registered callback. */
 int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
                                   uint64_t privileged_addr,
-                                  capability_t granted_gate);
+                                  capability_t granted_gate,
+                                  uint64_t value, uint64_t *out_forwarded);
 #endif

@@ -10,8 +10,11 @@ Admin capability kept within the stage enables it, then Gate forwards the
 report through Status to coreinit's sink. WrapperFactory owns the guest page
 mapping, ring drop, local endpoint grant, and return path; securinit invokes
 its `create` method through IPC rather than transitioning from its entry
-function. Coreinit queries Gate's counters through IPC and sees one denial
-and two forwarded reports after the wrapped guest runs. No direct C symbol
+function. It returns a WrappedObject capability whose `run` method enters
+and unmaps the guest on every invocation. The bootstrap invokes it once with
+Admin granting Gate access, then revokes that grant and invokes the same
+capability again. Coreinit reads Gate's counters through IPC: two denials,
+two forwarded reports. Only the first wrapped run reaches Status. No direct C symbol
 table or logger callback crosses the image boundary. These interfaces live
 in `schemas/securinit.capnp`, compiled into const index-based metadata at
 build time; per-image descriptor bridges are wired on entry.
@@ -24,7 +27,8 @@ at privileged Admin memory before dereferencing either, then copies a bounded
 flat Cap'n Proto request/response through its trusted Gate capability for the
 only granted endpoint. BRK returns to the wrapper in EL1. QEMU checks the
 Admin FAR, two SVC exceptions, the forwarded IPC marker, and EL1 return.
-This is a one-shot isolated probe, not a long-lived untrusted service. On
+These are repeated invocations of one isolated object, not a general loader
+for arbitrary guest images. On
 x86 the wrapper now owns a CPL3 code/data mapping, its TSS.rsp0 and DPL3
 INT80/INT3 entries. QEMU verifies a user #PF on Admin with CR2=Admin, then
 two wrapper-owned INT80 interceptions and an INT3 return to ring 0. The

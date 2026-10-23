@@ -97,14 +97,15 @@ with tempfile.TemporaryDirectory(prefix="securinit-capnp-") as tmp:
     check_c.write_text('''#include "generated_schemas.h"
 int main(void) {
     if (g_status_table.structs || g_gate_table.structs || g_admin_table.structs ||
-        g_wrapper_factory_table.structs) return 1;
+        g_wrapper_factory_table.structs || g_wrapped_object_table.structs) return 1;
     securinit_schemas_init();
     const method_schema_t *s = schema_method(&g_status_table, 0);
     const method_schema_t *gate_call = schema_method(&g_gate_table, 0);
     const method_schema_t *gate_stats = schema_method(&g_gate_table, 1);
     const method_schema_t *admin = schema_method(&g_admin_table, 0);
     const method_schema_t *factory = schema_method(&g_wrapper_factory_table, 0);
-    return !s || !gate_call || !gate_stats || !admin || !factory ||
+    const method_schema_t *wrapped = schema_method(&g_wrapped_object_table, 0);
+    return !s || !gate_call || !gate_stats || !admin || !factory || !wrapped ||
            schema_struct(&g_status_table, s->param_schema)->data_words != 1 ||
            s->result_schema != SCHEMA_IDX_NONE ||
            g_gate_table.objects[0].method_count != 2 ||
@@ -112,7 +113,8 @@ int main(void) {
            schema_struct(&g_gate_table, gate_stats->result_schema)->data_words != 2 ||
            schema_struct(&g_admin_table, admin->result_schema)->data_words != 1 ||
            schema_struct(&g_wrapper_factory_table, factory->param_schema)->data_words != 1 ||
-           schema_struct(&g_wrapper_factory_table, factory->result_schema)->data_words != 1;
+           schema_struct(&g_wrapper_factory_table, factory->result_schema)->data_words != 1 ||
+           schema_struct(&g_wrapped_object_table, wrapped->result_schema)->data_words != 1;
 }
 ''')
     executable = output / "check"
@@ -126,4 +128,4 @@ int main(void) {
         "-o", str(ipc_check))
     run(str(ipc_check))
 
-print("Cap'n Proto source → 16 generated object tables / 39 methods: ABI PASS")
+print("Cap'n Proto source → 17 generated object tables / 40 methods: ABI PASS")

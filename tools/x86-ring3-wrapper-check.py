@@ -54,9 +54,9 @@ with tempfile.TemporaryDirectory(prefix="ring3-grub-") as temp:
         deadline = time.monotonic() + int(os.environ.get("TIMEOUT_S", "70"))
         while time.monotonic() < deadline:
             text = LOG.read_text(errors="ignore") if LOG.exists() else ""
-            if ("ring3 hardware denied access to Admin" in text and
-                    "ring3 outbound Cap'n Proto IPC traversed wrapper-owned Gate" in text and
-                    "Gate denied 1 request(s), forwarded 2" in text):
+            if (text.count("ring3 hardware denied access to Admin") >= 2 and
+                    text.count("ring3 outbound Cap'n Proto IPC traversed wrapper-owned Gate") == 1 and
+                    "Gate denied 2 request(s), forwarded 2" in text):
                 break
             if process.poll() is not None:
                 raise RuntimeError("QEMU exited before ring3 proof")
@@ -73,15 +73,15 @@ with tempfile.TemporaryDirectory(prefix="ring3-grub-") as temp:
             trace,
         )
         cr2 = int(user_pf.group(2), 16) if user_pf else 0
-        if (cr2 != admin or trace.count("v=80 e=0000") < 2 or
-                "v=03 e=0000" not in trace or
+        if (cr2 != admin or trace.count("v=80 e=0000") < 4 or
+                trace.count("v=03 e=0000") < 2 or
                 "GENERAL PROTECTION FAULT" in text or
                 "DOUBLE FAULT" in text or "UNHANDLED PAGE FAULT" in text or
                 "[grubcfg] kernel loaded, booting" not in text):
             raise RuntimeError(f"ring3 denial mismatch CR2={cr2:#x}, "
                                f"Admin={admin:#x}; see {TRACE}")
-        print(f"x86 wrapper-owned ring3 IPC: PASS "
-              f"(Admin CR2={cr2:#x}, 2×INT80, INT3→ring0)")
+        print(f"x86 persistent WrappedObject: PASS "
+              f"(Admin CR2={cr2:#x}, 4×INT80, 2×INT3→ring0, revoke honored)")
     finally:
         process.terminate()
         try:

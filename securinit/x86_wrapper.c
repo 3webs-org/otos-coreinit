@@ -84,7 +84,8 @@ static void flush_page_tables(uint64_t root)
 
 int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
                                   uint64_t privileged_addr,
-                                  capability_t granted_gate)
+                                  capability_t granted_gate,
+                                  uint64_t value, uint64_t *out_forwarded)
 {
     uint64_t base = info->user_region_base;
     if (!info->x86_pml4_phys || !info->exception_router.handle ||
@@ -122,7 +123,7 @@ int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
     g_denied_access = g_ipc_denied = g_ipc_forwarded = g_exits = 0;
     uint64_t denied_addr = base + 0x2000, granted_addr = base + 0x2080;
     uint64_t result_addr = base + 0x4000;
-    uint64_t marker = SECURINIT_RING3_IPC_MARKER;
+    uint64_t marker = value;
     size_t user_message_len = capnp_build_flat((void *)(uintptr_t)(base + 0x3000),
                                                 24, &marker, 1);
     wrapper_ipc_call_t call = {
@@ -184,9 +185,11 @@ int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
     const wrapper_ipc_call_t *granted =
         (const wrapper_ipc_call_t *)(uintptr_t)granted_addr;
     uint64_t forwarded = capnp_read_flat((const void *)(uintptr_t)(base + 0x3100))[0];
-    return result == 0 && g_denied_access == 1 && g_exits == 1 &&
-           g_ipc_denied == 1 && g_ipc_forwarded == 1 &&
-           guest_results[0] == (uint64_t)(int64_t)WRAPPER_IPC_BAD_ENDPOINT &&
-           guest_results[1] == WRAPPER_IPC_OK &&
-           granted->response_len == 24 && forwarded == 1;
+    int valid = result == 0 && g_denied_access == 1 && g_exits == 1 &&
+                g_ipc_denied == 1 && g_ipc_forwarded == 1 &&
+                guest_results[0] == (uint64_t)(int64_t)WRAPPER_IPC_BAD_ENDPOINT &&
+                guest_results[1] == WRAPPER_IPC_OK &&
+                granted->response_len == 24 && forwarded <= 1;
+    if (valid) *out_forwarded = forwarded;
+    return valid;
 }

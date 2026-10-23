@@ -2,5 +2,6 @@
   "Status": [[0, 1, null]],
   "Gate": [[0, 1, 1], [1, 1, 2]],
   "Admin": [[0, 1, 1]],
-  "WrapperFactory": [[0, 1, 1]]
+  "WrapperFactory": [[0, 1, 1]],
+  "WrappedObject": [[0, 1, 1]]
 }

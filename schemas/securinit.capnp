@@ -21,5 +21,12 @@ interface Admin {
 # owns the ring drop, user mapping and per-object invoke override. saski
 # supplies only its existing generic IPC primitive, not a trap backend.
 interface WrapperFactory {
-  create @0 (unused :UInt64) -> (ok :UInt64);
+  create @0 (unused :UInt64) -> (wrappedHandle :UInt64);
+}
+
+# The handle returned by WrapperFactory. Its trusted handler enters the
+# isolated guest on each call, mediates its one outgoing Gate request, then
+# unmaps the user region before returning this forwarded result.
+interface WrappedObject {
+  run @0 (value :UInt64) -> (forwarded :UInt64);
 }
