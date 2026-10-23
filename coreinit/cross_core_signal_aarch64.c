@@ -26,10 +26,6 @@
 #define GICD_ISENABLER 0x0100
 #define GICD_SGIR       0x0f00  /* GICv2: target-list SGI generation */
 
-/* Handler to invoke when the SGI arrives on THIS core. Stored, not yet
- * called: see the note in cross_core_signal_install_handler(). */
-static void (*g_handler)(void) = 0;
-
 /* GIC distributor base, this file's own copy -- same NULL-tolerant
  * design as irq_aarch64.c's g_gicd_base and serial_aarch64.c's
  * g_pl011_base. NULL means the distributor hasn't been configured yet,
@@ -120,15 +116,8 @@ void cross_core_signal_send(uint64_t target)
 
 void cross_core_signal_install_handler(void (*handler)(void))
 {
-    g_handler = handler;
-
-    /* On ARM this records intent in irq_aarch64.c's handler table,
-     * exactly as the timer's handler does -- the exception vector table
-     * (assembly, a later unit) is what will acknowledge the SGI, look up
-     * this entry, and call g_handler(). The gap is deliberate and
-     * matches the one irq_aarch64.c documents for its own table: a
-     * function that silently did nothing would be worse than one that
-     * records the handler and says what is still missing. */
+    /* The EL1 exception table calls irq_aarch64_dispatch, which
+     * acknowledges SGI 0 and invokes this handler before EOI. */
     irq_install_handler(CROSS_CORE_SIGNAL_SGI, (void *)handler);
 
     /* Enable SGI 0 in the distributor if the base is known. ISENABLER is

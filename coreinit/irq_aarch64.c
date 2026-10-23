@@ -13,6 +13,7 @@
 #define GICD_CTLR           0x0000  /* Distributor Control Register */
 #define GICD_IGROUPR        0x0080  /* Interrupt Group Registers (32 interrupts per register) */
 #define GICD_ISENABLER      0x0100  /* Interrupt Set-Enable Registers */
+#define GICD_ICENABLER      0x0180  /* Interrupt Clear-Enable Registers */
 #define GICD_IPRIORITYR     0x0400  /* Interrupt Priority Registers (4 interrupts per register) */
 #define GICD_IROUTER        0x6000  /* Interrupt Routing Registers (GICv3, 8 bytes per interrupt) */
 #define GICC_CTLR           0x00    /* GICv2 CPU interface */
@@ -36,10 +37,7 @@
 #define MAX_IRQ_HANDLERS 32
 
 /* IRQ line -> handler address. Zero means "no handler installed yet".
- * This table will be consulted by the exception vector table (assembly,
- * a later unit) to dispatch interrupts. For now, irq_install_handler()
- * records the handler here and documents that the vector table does not
- * exist yet -- this is the "record intent" design from the task spec. */
+ * The EL1 vector's C dispatcher consults this table after GIC acknowledge. */
 static void *g_irq_handlers[MAX_IRQ_HANDLERS];
 
 /* IRQ line -> capability to invoke (method 0, message = IRQ number) on
@@ -58,11 +56,10 @@ static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
 static volatile uint8_t *g_gicd_base = NULL;
 static volatile uint8_t *g_gicc_base = NULL;
 
-/* Tick count incremented by the timer interrupt handler (once it exists).
- * Exposed via irq_get_tick_count() for LAPIC timer calibration on x86_64;
- * on aarch64 the generic timer has its own frequency source, but we keep
- * this for API compatibility. */
+/* Physical timer (PPI 14) is INTID 30. */
+#define ARM_TIMER_IRQ 30
 static uint64_t g_tick_count = 0;
+extern char irq_aarch64_vectors[];
 
 /* Read a GICv3 CPU interface system register. These are accessed via MRS
  * (Move to Register from System register), not MMIO. The register name is
@@ -91,8 +88,16 @@ static void gic_distributor_init(void)
         return;
     }
 
-    /* Disable the distributor while we configure it */
+    /* Firmware may have left device IRQs enabled (EFI-stub chainloading
+     * leaves more pending sources than the xnu path). Clear every enable
+     * bank before we unmask the CPU: only irq_install_handler may re-enable
+     * an INTID with a real callback. A pending level IRQ without a handler
+     * otherwise livelocks this core immediately on EOI. */
     mmio_write32((volatile void *)(g_gicd_base + GICD_CTLR), 0);
+    for (int i = 0; i < 8; i++) {
+        mmio_write32((volatile void *)(g_gicd_base + GICD_ICENABLER + i * 4),
+                     0xffffffffu);
+    }
 
     /* Set all interrupts to Group 1 (non-secure). IGROUPR is a bitmap,
      * 32 interrupts per register. We configure the first 8 registers
@@ -130,7 +135,9 @@ static void gic_cpu_interface_init(void)
          * Writing ICC_SRE_EL1 on QEMU virt's default GICv2 raises an
          * Undefined Instruction exception. */
         mmio_write32((volatile void *)(g_gicc_base + GICC_PMR), 0xff);
-        mmio_write32((volatile void *)(g_gicc_base + GICC_CTLR), 1);
+        /* Enable Group 0 and Group 1. AckCtl (bit 2) lets IAR read both:
+                 * without it QEMU reports 1022 for every Group 1 IRQ. */
+                mmio_write32((volatile void *)(g_gicc_base + GICC_CTLR), 7);
         kprintf("[coreinit]   irq: GICv2 CPU interface initialized\n");
         return;
     }
@@ -163,7 +170,6 @@ static void gic_cpu_interface_init(void)
 #define GIC_SPURIOUS_ID_MIN 1020
 #define GIC_SPURIOUS_ID_MAX 1023
 
-/* Check if an interrupt ID is spurious (must not be EOI'd). */
 static inline int irq_is_spurious(uint32_t irq_id)
 {
     return (irq_id >= GIC_SPURIOUS_ID_MIN && irq_id <= GIC_SPURIOUS_ID_MAX);
@@ -178,9 +184,7 @@ static inline int irq_is_spurious(uint32_t irq_id)
  * The caller MUST check irq_is_spurious() before processing the interrupt
  * or calling irq_aarch64_eoi().
  *
- * This function is not yet called -- the exception vector table (assembly,
- * a later unit) will call it on entry to the IRQ handler. For now, it is
- * defined here so the gap is visible and documented. */
+ * Called by the EL1 vector's C dispatcher. */
 uint32_t irq_aarch64_acknowledge(void)
 {
     if (g_gicc_base) {
@@ -197,10 +201,7 @@ uint32_t irq_aarch64_acknowledge(void)
  * the active-priority stack and can prevent future interrupts from being
  * delivered. Always check irq_is_spurious() first.
  *
- * This function is not yet called -- the exception vector table (assembly,
- * a later unit) will call it on exit from the IRQ handler, after checking
- * for spurious IDs. For now, it is defined here so the gap is visible and
- * documented. */
+ * Called by the EL1 vector's C dispatcher for non-spurious IDs. */
 void irq_aarch64_eoi(uint32_t irq_id)
 {
     if (g_gicc_base) {
@@ -208,6 +209,37 @@ void irq_aarch64_eoi(uint32_t irq_id)
         return;
     }
     write_sysreg(ICC_EOIR1_EL1, (uint64_t)irq_id);
+}
+
+/* Called from the EL1 vector with all GPRs and ELR/SPSR saved. For a
+ * GICv2 SGI the upper IAR bits carry the source CPU ID; EOI must receive
+ * that original value, not only INTID[9:0]. */
+void irq_aarch64_dispatch(void)
+{
+    uint32_t raw = irq_aarch64_acknowledge();
+    uint32_t id = raw & 0x3ffu;
+
+    if (irq_is_spurious(id)) {
+        return;
+    }
+
+    if (id == ARM_TIMER_IRQ) {
+        g_tick_count++;
+    }
+    if (id < MAX_IRQ_HANDLERS) {
+        void (*handler)(void) = (void (*)(void))g_irq_handlers[id];
+        if (handler) {
+            handler();
+        }
+        capability_t target = g_irq_targets[id];
+        if (target.handle != 0 && g_kernel_invoke) {
+            uint64_t word = id;
+            uint8_t msg[24];
+            size_t len = capnp_build_flat(msg, sizeof(msg), &word, 1);
+            g_kernel_invoke(target, 0, msg, len, NULL, 0, NULL);
+        }
+    }
+    irq_aarch64_eoi(raw);
 }
 
 void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
@@ -232,17 +264,16 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
         return;
     }
 
-    /* Initialize the GIC distributor (global state) and CPU interface
-     * (per-core state). The distributor is initialized once by the BSP;
-     * the CPU interface must be initialized by each core. */
+    /* Install the EL1 table before enabling any source. The earlier job
+     * switch may restore DAIF.I=0 on a fresh job, so retaining firmware's
+     * VBAR_EL1 even briefly after configuring the GIC is unsafe. */
+    __asm__ volatile("msr vbar_el1, %0\n\tisb" ::
+                     "r"((uintptr_t)irq_aarch64_vectors) : "memory");
     gic_distributor_init();
     gic_cpu_interface_init();
-
-    /* The exception-vector table has not been installed yet. Keep DAIF.I
-     * masked even after a handler is registered; otherwise the first timer
-     * interrupt vectors into firmware's stale handler instead of ours. */
-    kprintf("[coreinit] irq_core_init: GIC initialized; IRQs masked until "
-            "exception vectors are installed\n");
+    __asm__ volatile("msr daifclr, #2" ::: "memory");
+    kprintf("[coreinit] irq_core_init: EL1 vectors and GIC initialized; "
+            "IRQs enabled\n");
 }
 
 void irq_install_handler(int vector, void *handler_addr)
@@ -254,15 +285,8 @@ void irq_install_handler(int vector, void *handler_addr)
         return;
     }
 
-    /* Record the handler address in the table. The exception vector table
-     * (assembly, a later unit) will dispatch through this table once it
-     * exists. For now, this just records intent -- the handler is stored
-     * but not yet callable, because the vector table does not exist.
-     *
-     * This is deliberate: irq_install_handler() is part of the arch-neutral
-     * IRQ surface, and must exist and be callable even before the full
-     * interrupt path is wired up. A function that silently does nothing
-     * would be worse than one that records intent and says so. */
+    /* The installed EL1 vector dispatches to this callback after
+     * acknowledging its GIC interrupt ID. */
     g_irq_handlers[vector] = handler_addr;
 
     /* If the GIC is configured, enable this interrupt in the distributor.

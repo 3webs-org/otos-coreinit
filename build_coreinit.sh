@@ -108,7 +108,7 @@ case "$ARCH" in
               coreinit/smp_aarch64.c
               coreinit/arch_mmu_aarch64.c
         "
-        ASM_SOURCES="coreinit/job_exec_switch_aarch64.S"
+        ASM_SOURCES="coreinit/job_exec_switch_aarch64.S coreinit/irq_vectors_aarch64.S"
         LD_ARCH=arm64
         # 0x40200000 is 2 MiB into QEMU virt's RAM (base 0x40000000) --
         # the x86 convention's 24 MiB is below virt's RAM base and would
@@ -132,7 +132,7 @@ case "$ARCH" in
         # doesn't exist for an x86_64 build. No trampoline object either
         # -- PSCI CPU_ON replaces it (the AP entry contract is
         # documented in smp_aarch64.c).
-        ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_aarch64.o $BUILD/lib_fdt.o"
+        ARCH_EXTRA_OBJS="$BUILD/coreinit_job_exec_aarch64.o $BUILD/coreinit_irq_vectors_aarch64.o $BUILD/lib_fdt.o"
 
         # The aarch64 build is complete at the link level. The ARM BOOT
         # path is separate future work (G4c): it needs the saski S4 DTB

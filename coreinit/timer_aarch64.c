@@ -74,8 +74,8 @@ static inline void write_cntp_ctl(uint64_t val)
 /* Default timer ISR: increment tick count, invoke bound capability, re-arm.
  * The GIC (irq_aarch64.c) handles interrupt ack/EOI; we just manage the
  * timer state here. This ISR is NOT marked with __attribute__((interrupt))
- * because the vector table (not yet written) will handle the low-level
- * entry; this is called FROM that entry path. */
+ * because irq_vectors_aarch64.S handles low-level entry and calls the C
+ * dispatcher, which invokes us. */
 static void isr_arm_timer(void)
 {
     g_ticks++;
@@ -121,10 +121,9 @@ uint64_t timer_core_init(
     g_timer_target.handle = 0;
     g_ticks = 0;
     
-    /* Install our ISR at the timer vector. The actual exception vector table
-     * (assembly, not yet written) will dispatch to this function. We record
-     * the ISR address so timer_install_isr / timer_restore_normal_isr can
-     * swap it out for job_exec's preemption test. */
+    /* Install our ISR at the timer vector. The EL1 exception table calls
+     * irq_aarch64_dispatch, which invokes this handler. Keep its address
+     * so timer_install_isr / timer_restore_normal_isr can swap it out. */
     g_normal_isr = (void *)isr_arm_timer;
     irq_install_handler(TIMER_VECTOR, g_normal_isr);
     
@@ -152,8 +151,8 @@ uint64_t timer_get_ticks(void)
 
 void timer_eoi(void)
 {
-    /* No-op on aarch64: the GIC (irq_aarch64.c) handles EOI via ICC_EOIR1_EL1
-     * in its own interrupt dispatch path. The timer itself has no separate
+    /* No-op on aarch64: irq_aarch64_dispatch handles GICv2 MMIO or GICv3
+     * system-register EOI. The timer itself has no separate
      * EOI register -- re-arming TVAL (done in the ISR) clears ISTATUS. */
 }
 
