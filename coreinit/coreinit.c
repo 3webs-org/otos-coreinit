@@ -994,10 +994,31 @@ static void securinit_status_sink(void *data, uint32_t method_id,
     (void)response;
     (void)response_cap;
     *out_response_len = 0;
-    if (capnp_read_flat(msg)[0] == SECURINIT_BOOT_MARKER) {
+    uint64_t marker = capnp_read_flat(msg)[0];
+    if (marker == SECURINIT_BOOT_MARKER) {
         kprintf("[securinit] stage 2 entered through the standard IPC object interface\n");
+    } else if (marker == SECURINIT_EL0_DENIED_MARKER) {
+        kprintf("[securinit] EL0 hardware denied access to Admin; wrapper regained EL1\n");
     }
 }
+
+#if defined(__aarch64__)
+static void securinit_exception_router(void *data, uint32_t method_id,
+                                      const void *msg, size_t len, void *response,
+                                      size_t response_cap, size_t *out_response_len)
+{
+    (void)data;
+    (void)method_id;
+    (void)len;
+    uint64_t handler = capnp_read_flat(msg)[0];
+    uint64_t ok = handler != 0 && arch_mmu_root_phys() != 0;
+    if (ok) {
+        pagefault_aarch64_set_el0_hook(
+            (pagefault_el0_hook_t)(uintptr_t)handler);
+    }
+    *out_response_len = capnp_build_flat(response, response_cap, &ok, 1);
+}
+#endif
 
 static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
                                       uint64_t *out_block_id)
@@ -1011,11 +1032,26 @@ static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
     int allocated = scheduler_allocate_slice(0x200000, RESOURCE_KIND_MEMORY,
                                               RESOURCE_SYNC_TRANSFER, self_job_id,
                                               &resource_id, &base);
+#if defined(__aarch64__)
+    /* The wrapper owns this isolated 2 MiB region, never the same L2 block
+     * as its own Mach-O. Claim it through the ordinary memory object. */
+    const uint64_t user_region = ALLOC_MIN + 0x800000ull;
+    uint64_t user_resource_id = 0;
+    int user_allocated = allocated && scheduler_request_allocation(
+        user_region, 0x200000, RESOURCE_KIND_MEMORY, RESOURCE_SYNC_TRANSFER,
+        &user_resource_id);
+#endif
     scheduler_mutex_unlock(ALLOCATOR_MUTEX_ID, self_job_id);
     if (!allocated || !resource_id) {
         kprintf("[coreinit] securinit: could not claim an image region\n");
         return JOB_FINISHED;
     }
+#if defined(__aarch64__)
+    if (!user_allocated || !user_resource_id) {
+        kprintf("[coreinit] securinit: could not claim isolated user region\n");
+        return JOB_FINISHED;
+    }
+#endif
 
     size_t length = (size_t)(securinit_image_end - securinit_image_start);
     uint64_t entry = stage_load_macho(securinit_image_start, length, base,
@@ -1029,7 +1065,23 @@ static job_result_t job_securinit_boot(void *ctx, uint64_t self_job_id,
     if (!sink.handle) {
         return JOB_FINISHED;
     }
-    struct securinit_boot_info handoff = {g_kernel_invoke, g_factory, sink};
+    struct securinit_boot_info handoff = {
+        .kernel_invoke = g_kernel_invoke,
+        .factory = g_factory,
+        .status_sink = sink,
+    };
+#if defined(__aarch64__)
+    capability_t router = create_object(securinit_exception_router, NULL,
+                                        &g_el0_exception_router_table, 0);
+    if (!router.handle) {
+        return JOB_FINISHED;
+    }
+    handoff.exception_router = router;
+    handoff.exception_router_bind_method = EL0_EXCEPTION_ROUTER_METHOD_BIND;
+    handoff.user_region_base = user_region;
+    handoff.user_region_size = 0x200000;
+    handoff.ttbr0_root_phys = arch_mmu_root_phys();
+#endif
     uint64_t (*start)(const struct securinit_boot_info *) =
         (uint64_t (*)(const struct securinit_boot_info *))(uintptr_t)entry;
     uint64_t gate_handle = start(&handoff);

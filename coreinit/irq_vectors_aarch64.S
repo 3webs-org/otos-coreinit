@@ -61,6 +61,7 @@ _irq_aarch64_unhandled:
     str x0, [sp, #248]
     mrs x0, spsr_el1
     str x0, [sp, #256]
+    mov x0, sp
     bl \handler
     b _irq_aarch64_restore
 .endm

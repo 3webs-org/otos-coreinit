@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="coreinit-capnp-") as tmp:
     actual = json.loads((output / "generated_schemas.json").read_text())
     baseline = json.loads(BASELINE.read_text())
     assert actual == baseline
-    assert len(actual) == 10 and sum(len(methods) for methods in actual.values()) == 31
+    assert len(actual) == 11 and sum(len(methods) for methods in actual.values()) == 32
 
     compiler = os.environ.get("CC") or shutil.which("clang") or shutil.which("cc")
     if not compiler:
@@ -116,4 +116,4 @@ int main(void) {
         str(output / "generated_schemas.c"), str(check_c), "-o", str(executable))
     run(str(executable))
 
-print("Cap'n Proto source → 13 generated object tables / 34 methods: ABI PASS")
+print("Cap'n Proto source → 14 generated object tables / 37 methods: ABI PASS")

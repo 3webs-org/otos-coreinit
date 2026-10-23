@@ -110,3 +110,12 @@ uint64_t pagefault_get_count(void);
  * split region (0 if not found), so callers can inspect exactly what
  * the page table says before/after an operation. */
 uint64_t pagefault_debug_read_pte(uint64_t pml4_phys, uint64_t addr);
+
+#if defined(__aarch64__)
+/* A trusted wrapper object registers its OWN lower-EL synchronous policy
+ * callback through a factory-created exception-router object. The hardware
+ * vector only saves this frame and dispatches; it does not authorize calls.
+ * frame[0..30] are x0..x30, frame[31] ELR_EL1, frame[32] SPSR_EL1. */
+typedef int (*pagefault_el0_hook_t)(uint64_t *frame, uint64_t esr, uint64_t far);
+void pagefault_aarch64_set_el0_hook(pagefault_el0_hook_t hook);
+#endif

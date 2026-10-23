@@ -102,3 +102,9 @@ interface MemoryManager {
 interface IrqManager {
   bind @0 (irq :UInt64, target :UInt64) -> ();
 }
+
+# Trusted wrapper installation of a lower-EL synchronous-exception handler.
+# This object routes hardware exceptions; securinit owns policy and the gate.
+interface El0ExceptionRouter {
+  bind @0 (handler :UInt64) -> (ok :UInt64);
+}

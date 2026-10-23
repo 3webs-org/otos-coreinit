@@ -30,7 +30,13 @@ static int g_have_split, g_handler_ready;
 static uint64_t g_streamed[MAX_STREAMED_PAGES], g_cow[MAX_COW_PAGES];
 static size_t g_streamed_count, g_cow_count, g_cow_used;
 static uint64_t g_fault_count, g_cow_copies;
+static pagefault_el0_hook_t g_el0_hook;
 extern char irq_aarch64_vectors[];
+
+void pagefault_aarch64_set_el0_hook(pagefault_el0_hook_t hook)
+{
+    __atomic_store_n(&g_el0_hook, hook, __ATOMIC_RELEASE);
+}
 
 static void flush_translations(void)
 {
@@ -150,13 +156,20 @@ int pagefault_mark_cow(uint64_t pml4_phys, uint64_t page_addr)
 /* Called by the synchronous EL1 vector. ESR_EL1.EC=0x25/0x24 identifies
  * same/lower-EL data aborts. DFSC=4..7 is translation fault; 12..15 is
  * permission fault, with WnR in ISS bit 6. ERET retries the original PC. */
-void pagefault_aarch64_handle(void)
+void pagefault_aarch64_handle(uint64_t *frame)
 {
     uint64_t esr, far, elr;
     __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));
     __asm__ volatile("mrs %0, elr_el1" : "=r"(elr));
     uint64_t ec = (esr >> 26) & 0x3fu;
+    /* EL0 SVC, Data Abort and BRK belong to the wrapper that created the
+     * privilege boundary, not to coreinit's STREAM/COW policy. */
+    pagefault_el0_hook_t hook = __atomic_load_n(&g_el0_hook, __ATOMIC_ACQUIRE);
+    if (hook && (ec == 0x15 || ec == 0x24 || ec == 0x3c) &&
+        hook(frame, esr, far)) {
+        return;
+    }
     uint64_t dfsc = esr & 0x3fu;
     uint64_t page = far & ~(PAGE_SIZE - 1);
     if (g_handler_ready && (ec == 0x25 || ec == 0x24)) {

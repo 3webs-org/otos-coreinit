@@ -3,6 +3,7 @@
  * forwards to Status after that change. This proves capability-mediated
  * wrapping, NOT a security boundary while all code shares ring 0. */
 #include "../include/securinit_abi.h"
+#include "arm_wrapper.h"
 #include "capnp_build.h"
 #include "generated_schemas.h"
 #include <stdint.h>
@@ -136,5 +137,19 @@ uint64_t securinit_main(const struct securinit_boot_info *info)
         response_len < 24 || capnp_read_flat(response)[0] != 1) {
         return 0;
     }
+#if defined(__aarch64__)
+    if (info->exception_router.handle) {
+        if (!securinit_arm_isolation_probe(info,
+                                           (uint64_t)(uintptr_t)g_admin_record)) {
+            return 0;
+        }
+        uint64_t proof = SECURINIT_EL0_DENIED_MARKER;
+        request_len = capnp_build_flat(request, sizeof(request), &proof, 1);
+        if (!g_invoke(g_status, STATUS_METHOD_REPORT, request, request_len,
+                      NULL, 0, &response_len)) {
+            return 0;
+        }
+    }
+#endif
     return gate.handle; /* Admin remains private to this stage. */
 }

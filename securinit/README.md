@@ -12,9 +12,17 @@ table or logger callback crosses the image boundary. These interfaces live
 in `schemas/securinit.capnp`, compiled into const index-based metadata at
 build time; per-image descriptor bridges are wired on entry.
 
-This is **not authorization yet**. The kernel and both stages still run in
-ring 0 with raw pointer-valued handles and a factory accepting native handler
-addresses. Such a process could bypass any wrapper or read a purported secret.
+On ARM the wrapper now also allocates a separate 2 MiB guest region and
+briefly enters EL0. A real permission fault denies a read of its EL1-only
+Admin record; the wrapper skips that load, then handles the guest's BRK to
+return to EL1. QEMU checks ESR=0x24, FAR=Admin, EL0 PC, and EL1 return. This
+is one negative hardware-access probe, not yet mediated outgoing IPC or a
+long-lived isolated service. The x86 wrapper still runs entirely in ring 0.
+
+This is **not authorization yet**. The privileged kernel and wrapper stage
+still hold raw pointer-valued handles and a factory accepting native handler
+addresses. Without a wrapper-owned invoke gate mediating all EL0 calls,
+untrusted code cannot be granted useful IPC access.
 A real securinit authorization policy requires a trusted loader plus
 privilege/isolation for untrusted code, and a factory-controlled wrapping
 object that does not hand out its unguarded underlying handle. Gate/Admin

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
 #include "cap.h"
 
 /* One-time handoff into independently-linked securinit. Only the standard
@@ -12,6 +14,17 @@ struct securinit_boot_info {
                          size_t response_cap, size_t *out_response_len);
     capability_t factory;
     capability_t status_sink;
+    /* ARM wrapper-owned EL1/EL0 boundary bootstrap. The factory-created
+     * exception-router object accepts a trusted wrapper callback while
+     * coreinit's existing VBAR table keeps IRQ/COW routing intact. The
+     * wrapper, not saski, owns the user region mapping and gate policy. */
+    capability_t exception_router;
+    uint32_t exception_router_bind_method;
+    uint32_t reserved;
+    uint64_t user_region_base;
+    uint64_t user_region_size;
+    uint64_t ttbr0_root_phys;
 };
 
 #define SECURINIT_BOOT_MARKER 0x5345435552494e49ull
+#define SECURINIT_EL0_DENIED_MARKER 0x454c3044454e4945ull
