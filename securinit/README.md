@@ -15,8 +15,9 @@ build time; per-image descriptor bridges are wired on entry.
 On ARM the wrapper now also allocates a separate 2 MiB guest region and
 briefly enters EL0. A real permission fault denies a read of its EL1-only
 Admin record. The wrapper also receives EL0 `svc #0` calls at the existing
-EL1 vector, rejects an ungranted local endpoint, and copies a bounded flat
-Cap'n Proto request/response through its trusted Gate capability for the
+EL1 vector, rejects an ungranted local endpoint and a request pointer aimed
+at privileged Admin memory before dereferencing either, then copies a bounded
+flat Cap'n Proto request/response through its trusted Gate capability for the
 only granted endpoint. BRK returns to the wrapper in EL1. QEMU checks the
 Admin FAR, two SVC exceptions, the forwarded IPC marker, and EL1 return.
 This is a one-shot isolated probe, not a long-lived untrusted service. The

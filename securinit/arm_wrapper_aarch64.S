@@ -39,18 +39,21 @@ _securinit_arm_run_user:
     ldp x29, x30, [sp], #16
     ret
 
-/* A real EL0 data abort protects Admin. The wrapper skips the faulting
- * load, rejects a forged local endpoint via the SAME svc #0 entry, then
- * forwards a granted Gate call. BRK returns control to trusted EL1 code. */
+/* EL0 cannot read Admin. The same svc #0 entry rejects both an ungranted
+ * endpoint and a request pointer aimed at Admin before forwarding the
+ * granted Gate call. BRK returns control to trusted EL1 code. */
 .globl _securinit_arm_probe_start
 _securinit_arm_probe_start:
     ldr x2, [x1]
     mov x0, x4
     svc #0
     str x0, [x3]
-    mov x0, x5
+    add x0, x4, #0x40
     svc #0
     str x0, [x3, #8]
+    mov x0, x5
+    svc #0
+    str x0, [x3, #16]
     brk #0
 .globl _securinit_arm_probe_end
 _securinit_arm_probe_end:

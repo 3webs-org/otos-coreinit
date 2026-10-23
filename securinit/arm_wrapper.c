@@ -185,6 +185,7 @@ int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
     g_ipc_denied = g_ipc_forwarded = 0;
 
     const uint64_t rejected_addr = base + 0x2000;
+    const uint64_t bad_pointer_addr = base + 0x2040;
     const uint64_t granted_addr = base + 0x2080;
     const uint64_t request_addr = base + 0x3000;
     const uint64_t response_addr = base + 0x3100;
@@ -205,6 +206,12 @@ int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
     for (size_t i = 0; i < sizeof(call); i++) {
         ((uint8_t *)(uintptr_t)granted_addr)[i] = call_bytes[i];
     }
+    call.request_ptr = privileged_addr; /* must fail BEFORE reading Admin */
+    call_bytes = (const uint8_t *)&call;
+    for (size_t i = 0; i < sizeof(call); i++) {
+        ((uint8_t *)(uintptr_t)bad_pointer_addr)[i] = call_bytes[i];
+    }
+    call.request_ptr = request_addr;
     call.local_endpoint = WRAPPER_GATE_ENDPOINT + 1; /* not granted */
     call_bytes = (const uint8_t *)&call;
     for (size_t i = 0; i < sizeof(call); i++) {
@@ -212,6 +219,7 @@ int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
     }
     ((uint64_t *)(uintptr_t)result_addr)[0] = UINT64_MAX;
     ((uint64_t *)(uintptr_t)result_addr)[1] = UINT64_MAX;
+    ((uint64_t *)(uintptr_t)result_addr)[2] = UINT64_MAX;
     l1[1] = (uint64_t)(uintptr_t)g_user_l2 | TABLE_DESC;
     flush_translations();
     sync_executable(entry, entry + bytes);
@@ -241,8 +249,9 @@ int securinit_arm_isolation_probe(const struct securinit_boot_info *info,
         (const wrapper_ipc_call_t *)(uintptr_t)granted_addr;
     uint64_t forwarded = capnp_read_flat((const void *)(uintptr_t)response_addr)[0];
     return result == 0 && g_denied_access == 1 && g_exits == 1 &&
-           g_ipc_denied == 1 && g_ipc_forwarded == 1 &&
+           g_ipc_denied == 2 && g_ipc_forwarded == 1 &&
            guest_results[0] == (uint64_t)(int64_t)WRAPPER_IPC_BAD_ENDPOINT &&
-           guest_results[1] == WRAPPER_IPC_OK &&
+           guest_results[1] == (uint64_t)(int64_t)WRAPPER_IPC_BOUNDS &&
+           guest_results[2] == WRAPPER_IPC_OK &&
            granted->response_len == 24 && forwarded == 1;
 }
