@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 /* Whether THIS core has a functioning MMU (paging hardware) at all --
  * not every node in a cluster is guaranteed one (a simple accelerator
  * or microcontroller core joining the cluster might have none), and
@@ -20,3 +22,12 @@
  * or the absence of one) without needing to know how it was
  * determined. */
 int arch_has_mmu(void);
+
+#if defined(__aarch64__)
+/* QEMU virt ARM reference platform: install this core's own EL1 identity
+ * tables before device discovery. Returns 1 when translation is active.
+ * pml4_phys in init_boot_info remains x86-only; ARM obtains its own root
+ * through arch_mmu_root_phys when fault handling needs it. */
+int arch_mmu_enable_identity_map(void);
+uint64_t arch_mmu_root_phys(void);
+#endif

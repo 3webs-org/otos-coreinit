@@ -1,28 +1,77 @@
-/* aarch64 backend for arch_mmu.h. Everything ARM-specific about answering
- * "does THIS core have a working MMU" lives in this one file -- porting to
- * another architecture means writing a new file matching arch_mmu.h's
- * contract, not touching anything that includes that header.
+/* Per-core EL1 identity map for QEMU virt's 512 MiB ARM reference machine.
+ * The bootloader (and PSCI on every AP) enters saski/coreinit with the MMU
+ * off. A 4 KiB L1 table maps device MMIO below RAM as Device-nGnRE and the
+ * 0x40000000..0x80000000 window as inner-shareable normal WB memory.
+ * The running kernel, init, AP regions, mailbox, EFI tables, PL011 and GIC
+ * retain identical virtual and physical addresses across the switch.
  *
- * The x86_64 backend can answer with a constant: reaching long mode at all
- * REQUIRES paging to be enabled (CR0.PG and CR4.PAE both set), so there is
- * no such thing as an x86_64 core running this image without a functioning
- * MMU already under it. ARM is precisely the architecture that header's
- * comment anticipates: an AArch64 core can legitimately execute with
- * translation disabled -- SCTLR_EL1.M == 0 -- for example immediately after
- * PSCI CPU_ON, before the entry code has enabled the MMU and caches. So the
- * honest implementation reads the hardware state instead of returning 1. */
+ * No shared page-table root: this BSS is re-created in each Mach-O copy.
+ * The sparse two-block map leaves everything above 2 GiB inaccessible. */
 #include "arch_mmu.h"
+#include <stdint.h>
 
-/* Bit 0 of SCTLR_EL1 is the M bit: the MMU enable for EL1, the exception
- * level this image runs at. Reading it reports what the core is actually
- * doing right now -- a core still running identity-mapped with translation
- * off returns 0. Cluster join and resource declaration treat that exactly
- * as the header documents: no RESOURCE_SYNC_STREAM or RESOURCE_SYNC_COW
- * resources are declared on a node whose answer is 0, because there is no
- * paging hardware there to split a region and catch the faults. */
+#define ARM_RAM_BASE 0x40000000ull
+#define DESC_BLOCK 0x1ull
+#define DESC_AF (1ull << 10)
+#define DESC_UXN (1ull << 54)
+#define DESC_PXN (1ull << 53)
+#define DESC_NORMAL (1ull << 2)
+#define DESC_INNER_SHAREABLE (3ull << 8)
+
+static uint64_t g_l1[512] __attribute__((aligned(4096)));
+static int g_owned_map;
+
 int arch_has_mmu(void)
 {
-    unsigned long sctlr;
+    uint64_t sctlr;
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    return (int)(sctlr & 1ul);
+    return (sctlr & 1ull) != 0;
+}
+
+uint64_t arch_mmu_root_phys(void)
+{
+    return g_owned_map ? (uint64_t)(uintptr_t)g_l1 : 0;
+}
+
+int arch_mmu_enable_identity_map(void)
+{
+    uint64_t current_el, sctlr;
+    __asm__ volatile("mrs %0, CurrentEL" : "=r"(current_el));
+    if (current_el != (1ull << 2)) {
+        return 0; /* EL1 owns TTBR0_EL1; never write it from another EL. */
+    }
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    if (sctlr & 1ull) {
+        return 1; /* Preserve an already-active platform map. */
+    }
+
+    for (unsigned i = 0; i < 512; i++) {
+        g_l1[i] = 0;
+    }
+    g_l1[0] = DESC_BLOCK | DESC_AF | DESC_UXN | DESC_PXN;
+    g_l1[1] = ARM_RAM_BASE | DESC_BLOCK | DESC_AF | DESC_NORMAL |
+              DESC_INNER_SHAREABLE | DESC_UXN;
+
+    /* MAIR index 0 = Device-nGnRE (0x04), index 1 = Normal WBWA (0xff).
+     * 39-bit TTBR0 VA, 4 KiB granule, inner-shareable WB walks; TTBR1
+     * walks disabled. Every mapped physical address fits in 32 bits. */
+    const uint64_t mair = 0xff04ull;
+    const uint64_t tcr = 25ull | (16ull << 16) | (1ull << 23) |
+                         (1ull << 8) | (1ull << 10) | (3ull << 12);
+    const uint64_t ttbr = (uint64_t)(uintptr_t)g_l1;
+    __asm__ volatile(
+        "msr daifset, #2\n\t"
+        "dsb sy\n\t"
+        "msr mair_el1, %0\n\t"
+        "msr tcr_el1, %1\n\t"
+        "msr ttbr0_el1, %2\n\t"
+        "isb\n\t"
+        "tlbi vmalle1\n\t"
+        "dsb sy\n\t"
+        "isb"
+        : : "r"(mair), "r"(tcr), "r"(ttbr) : "memory");
+    sctlr |= (1ull << 0) | (1ull << 2) | (1ull << 12); /* M,C,I */
+    __asm__ volatile("msr sctlr_el1, %0\n\tisb" : : "r"(sctlr) : "memory");
+    g_owned_map = 1;
+    return arch_has_mmu();
 }

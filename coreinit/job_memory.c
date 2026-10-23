@@ -87,12 +87,11 @@ int job_memory_acquire_resource(uint64_t resource_id, job_memory_slice_t *out)
         return 0;
     }
 
-    /* No fault mechanics on this node -- the slice behaves as plain
-     * memory: the region is already shared and directly addressable, so
-     * the acquire succeeds but there is nothing to split or mark. See
-     * pagefault.h's pagefault_supported(). */
+    /* A STREAM/COW acquire without a fault handler would silently act
+     * like TRANSFER and allow writes to the owner's shared page. Reject
+     * it rather than claiming a protection guarantee this node lacks. */
     if (!pagefault_supported()) {
-        return 1;
+        return 0;
     }
 
     pagefault_init(g_my_pml4_phys);

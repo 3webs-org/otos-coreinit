@@ -782,16 +782,16 @@ typedef struct {
     uint64_t pml4_phys;
 } pagefault_demo_ctx_t;
 
-/* 8MB -- safely above the kernel/coreinit's own load addresses and the
- * memory manager's pre-claimed low regions, safely below
- * CORE_REGION_BASE (32MB) so it can't collide with an AP's region in a
- * multi-core boot, and (this mattered -- see the demo job's own commit
- * history) safely WITHIN this project's actual default QEMU RAM size
- * (~128MB): the original choice of 256MB silently wrote to backing
- * memory that didn't exist, which looks identical to a data-loss bug
- * in the page-fault mechanism itself until you check the actual RAM
- * size this project's own earlier boot logs already reported. */
+/* One unclaimed 2 MiB RAM region per architecture. x86 uses 8 MiB,
+ * above its low reserved pages and below AP regions; ARM QEMU virt
+ * starts RAM at 0x40000000, so its demo cannot use the x86 address. */
+#if defined(__aarch64__)
+/* QEMU virt's 0x00800000 is GIC MMIO, not RAM. This 2 MiB region sits
+ * above all 64 possible AP regions and below the allocation pool. */
+#define PF_DEMO_REGION 0x53000000ull
+#else
 #define PF_DEMO_REGION 0x800000ull
+#endif
 #define PF_STREAM_PAGE (PF_DEMO_REGION + 0x1000ull)
 #define PF_COW_PAGE (PF_DEMO_REGION + 0x2000ull)
 
@@ -1009,9 +1009,14 @@ void coreinit_main(struct init_boot_info *info)
     static topology_t topo;
     int have_topo = 0;
 #if defined(__aarch64__)
-    /* The UART base comes from the FDT or ACPI SPCR, not a fixed QEMU
-     * address. Discover it before the first stage-1 print. */
+    /* This core owns its identity map; the bootloader and PSCI supply none.
+     * Keep the same physical addresses before and after enabling it, then
+     * discover the UART from FDT or ACPI SPCR before the stage-1 print. */
+    int mmu_ready = arch_mmu_enable_identity_map();
     have_topo = topology_discover(&topo, topology_boot_hint(info));
+    kprintf("[coreinit] aarch64 EL1 identity MMU: %s (root 0x%llX)\n",
+            mmu_ready ? "enabled" : "unavailable",
+            (unsigned long long)arch_mmu_root_phys());
 #endif
     g_kernel_invoke = info->kernel_invoke;
     g_factory = info->caps.factory;
@@ -1206,15 +1211,16 @@ void coreinit_main(struct init_boot_info *info)
      * else (the shared serial resource just below, a job's own
      * peripheral demo, ...) already uses, not something join hands out
      * automatically. cpu_core mirrors what every node has always
-     * implicitly provided; mmu is declared only if this node actually
-     * has one (see arch_mmu.h) -- absence is the normal, expected case
-     * on some future non-x86_64 node, not an error here. */
+     * implicitly provided. The MMU resource is advertised only when
+     * translation AND fault resolution work on this node. */
     uint64_t my_cpu_core = scheduler_declare_resource(
         RESOURCE_KIND_CPU_CORE, topology_cluster_arch(), 0,
         RESOURCE_SYNC_TRANSFER);
     kprintf("[coreinit] declared this node's own cpu_core resource, id %u\n",
            (unsigned)my_cpu_core);
-    if (arch_has_mmu()) {
+    /* STREAM/COW users interpret this resource as an actual ability to
+     * fault and resolve pages, not merely an enabled translation bit. */
+    if (arch_has_mmu() && pagefault_supported()) {
         uint64_t my_mmu = scheduler_declare_resource(
             RESOURCE_KIND_MMU, topology_cluster_arch(), 0,
             RESOURCE_SYNC_TRANSFER);
