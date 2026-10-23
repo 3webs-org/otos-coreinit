@@ -80,7 +80,7 @@ case "$ARCH" in
         ;;
     aarch64)
         TARGET=aarch64-apple-darwin
-        CFLAGS="-target $TARGET -std=c11 -ffreestanding -fno-stack-protector -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
+        CFLAGS="-target $TARGET -mcpu=generic -march=armv8-a -mgeneral-regs-only -std=c11 -ffreestanding -fno-stack-protector -Wall -Wextra -I$ROOT/coreinit -I$SASKI_ROOT/kernel -I$ROOT/include -O1 -g"
         
         # aarch64 source files (complete at the link level; ARM boot path
         # is future work)

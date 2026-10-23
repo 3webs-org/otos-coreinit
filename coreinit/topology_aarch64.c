@@ -300,7 +300,16 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
     }
 
     const void *blob = (const void *)(uintptr_t)arch_hint;
-    if (!fdt_valid(blob, 0)) {
+    const uint8_t *header = (const uint8_t *)blob;
+    /* fdt_valid requires the supplied extent; zero always fails. The
+     * kernel already validated this handoff, and the FDT header declares
+     * its total size in big-endian bytes 4..7. Bound that extent before
+     * asking the FDT parser to validate its internal offsets. */
+    uint32_t blob_size = ((uint32_t)header[4] << 24) |
+                         ((uint32_t)header[5] << 16) |
+                         ((uint32_t)header[6] << 8) | header[7];
+    if (blob_size < 40 || blob_size > 16 * 1024 * 1024 ||
+        !fdt_valid(blob, blob_size)) {
         kprintf("[coreinit]   topology: 0x%llX is neither a valid DTB nor an RSDP\n",
                (unsigned long long)arch_hint);
         return 0;

@@ -1023,6 +1023,13 @@ static void register_job_types(void)
 void coreinit_main(struct init_boot_info *info)
 {
     serial_init();
+    static topology_t topo;
+    int have_topo = 0;
+#if defined(__aarch64__)
+    /* The UART base comes from the FDT or ACPI SPCR, not a fixed QEMU
+     * address. Discover it before the first stage-1 print. */
+    have_topo = topology_discover(&topo, topology_boot_hint(info));
+#endif
     g_kernel_invoke = info->kernel_invoke;
     g_factory = info->caps.factory;
     proxy_init(g_kernel_invoke, g_factory);
@@ -1175,13 +1182,11 @@ void coreinit_main(struct init_boot_info *info)
         run_job_exec_priority_test();
     }
 
-    /* Topology discovery happens once, here, since both job_timer_bringup
-     * (needs the local APIC's MMIO base on x86_64) and job_smp_bringup
-     * (needs the full core list) depend on it -- topo outlives this
-     * function (it never returns) as an ordinary local variable, same as
-     * everything else coreinit_main sets up before handing off. */
-    static topology_t topo;
-    int have_topo = topology_discover(&topo, topology_boot_hint(info));
+    /* ARM discovers topology at entry to wire serial before the first
+     * print. x86 discovers here, before timer and SMP bring-up. */
+#if !defined(__aarch64__)
+    have_topo = topology_discover(&topo, topology_boot_hint(info));
+#endif
     if (have_topo) {
         kprintf("[coreinit] this core's own ID: %llu\n",
                 (unsigned long long)topology_self_id());
