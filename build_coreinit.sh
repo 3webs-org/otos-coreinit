@@ -164,6 +164,8 @@ python3 "$ROOT/tools/gen-capnp-schemas.py" "$ROOT/schemas/securinit.capnp" \
 "$CC" $CFLAGS -I"$BUILD/securinit-generated" \
     -c "$BUILD/securinit-generated/generated_schemas.c" \
     -o "$BUILD/securinit_schemas.o"
+"$CC" $CFLAGS -I"$BUILD/securinit-generated" \
+    -c "$ROOT/securinit/user_ipc.c" -o "$BUILD/securinit_user_ipc.o"
 SECURINIT_ARCH_OBJS=""
 if [ "$ARCH" = "aarch64" ]; then
     "$CC" $CFLAGS -I"$BUILD/securinit-generated" \
@@ -180,7 +182,8 @@ elif [ "$ARCH" = "x86_64" ]; then
 fi
 "$LD64" -arch "$LD_ARCH" -platform_version macos 10.12 10.12 \
     -e _securinit_main -pagezero_size 0 -o "$BUILD/securinit.macho" \
-    "$BUILD/securinit_main.o" "$BUILD/securinit_schemas.o" $SECURINIT_ARCH_OBJS
+    "$BUILD/securinit_main.o" "$BUILD/securinit_schemas.o" \
+    "$BUILD/securinit_user_ipc.o" $SECURINIT_ARCH_OBJS
 "$CC" -target "$TARGET" \
     -DSECURINIT_MACHO_PATH="\"$BUILD/securinit.macho\"" \
     -c "$ROOT/coreinit/securinit_blob.S" -o "$BUILD/coreinit_securinit_blob.o"

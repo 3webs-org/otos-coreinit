@@ -23,9 +23,10 @@ Admin FAR, two SVC exceptions, the forwarded IPC marker, and EL1 return.
 This is a one-shot isolated probe, not a long-lived untrusted service. On
 x86 the wrapper now owns a CPL3 code/data mapping, its TSS.rsp0 and DPL3
 INT80/INT3 entries. QEMU verifies a user #PF on Admin with CR2=Admin, then
-two wrapper-owned INT80 interceptions and an INT3 return to ring 0. INT80
-currently rejects even the granted Gate endpoint on x86; bounded outbound
-Cap'n Proto forwarding remains the next unit on that architecture.
+two wrapper-owned INT80 interceptions and an INT3 return to ring 0. The
+first ungranted endpoint is denied; the second has its Cap'n Proto bytes
+copied into ring-0-only memory, validated by the Gate schema and forwarded
+through the existing kernel_invoke path. saski adds no trap backend.
 
 This is **not full authorization yet**. The privileged kernel and wrapper
 stage still hold native handles and handler pointers; only the one tested

@@ -58,58 +58,6 @@ static void sync_executable(uint64_t start, uint64_t end)
     __asm__ volatile("dsb ish\n\tisb" ::: "memory");
 }
 
-static int within_user(uint64_t addr, uint64_t size)
-{
-    return addr >= g_user_base && size <= g_user_size &&
-           addr - g_user_base <= g_user_size - size;
-}
-
-static int64_t dispatch_guest_call(uint64_t descriptor_addr)
-{
-    if (!within_user(descriptor_addr, sizeof(wrapper_ipc_call_t))) {
-        g_ipc_denied++;
-        return WRAPPER_IPC_BAD_DESCRIPTOR;
-    }
-    wrapper_ipc_call_t call;
-    const uint8_t *src = (const uint8_t *)(uintptr_t)descriptor_addr;
-    uint8_t *dst = (uint8_t *)&call;
-    for (size_t i = 0; i < sizeof(call); i++) dst[i] = src[i];
-    if (call.version != WRAPPER_IPC_VERSION) {
-        g_ipc_denied++;
-        return WRAPPER_IPC_BAD_DESCRIPTOR;
-    }
-    if (call.local_endpoint != WRAPPER_GATE_ENDPOINT ||
-        call.method_id != GATE_METHOD_INVOKE) {
-        g_ipc_denied++;
-        return WRAPPER_IPC_BAD_ENDPOINT;
-    }
-    if (call.request_len > WRAPPER_IPC_MAX_BYTES ||
-        call.response_capacity > WRAPPER_IPC_MAX_BYTES ||
-        !within_user(call.request_ptr, call.request_len) ||
-        !within_user(call.response_ptr, call.response_capacity)) {
-        g_ipc_denied++;
-        return WRAPPER_IPC_BOUNDS;
-    }
-    src = (const uint8_t *)(uintptr_t)call.request_ptr;
-    for (uint64_t i = 0; i < call.request_len; i++) g_request[i] = src[i];
-    size_t response_len = 0;
-    if (!g_priv_invoke(g_granted_gate, call.method_id,
-                       g_request, (size_t)call.request_len,
-                       g_response, (size_t)call.response_capacity,
-                       &response_len) || response_len > call.response_capacity) {
-        g_ipc_denied++;
-        return WRAPPER_IPC_REJECTED;
-    }
-    dst = (uint8_t *)(uintptr_t)call.response_ptr;
-    for (size_t i = 0; i < response_len; i++) dst[i] = g_response[i];
-    call.response_len = response_len;
-    dst = (uint8_t *)(uintptr_t)(descriptor_addr + offsetof(wrapper_ipc_call_t, response_len));
-    src = (const uint8_t *)&call.response_len;
-    for (unsigned i = 0; i < 8; i++) dst[i] = src[i];
-    g_ipc_forwarded++;
-    return WRAPPER_IPC_OK;
-}
-
 static int wrapper_el0_sync(uint64_t *frame, uint64_t esr, uint64_t far)
 {
     if ((frame[32] & 0xfu) != 0 || frame[31] < g_user_base ||
@@ -126,7 +74,12 @@ static int wrapper_el0_sync(uint64_t *frame, uint64_t esr, uint64_t far)
         return 1;
     }
     if (ec == 0x15 && (esr & 0xffffu) == 0) { /* wrapper's only SVC */
-        frame[0] = (uint64_t)dispatch_guest_call(frame[0]);
+        int64_t status = wrapper_dispatch_guest_call(
+            g_user_base, g_user_size, g_granted_gate, g_priv_invoke,
+            frame[0], g_request, g_response);
+        frame[0] = (uint64_t)status;
+        if (status == WRAPPER_IPC_OK) g_ipc_forwarded++;
+        else g_ipc_denied++;
         return 1;
     }
     if (ec == 0x3c) { /* BRK terminates this one-shot wrapped probe. */

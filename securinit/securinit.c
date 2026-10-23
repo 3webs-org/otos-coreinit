@@ -155,7 +155,8 @@ uint64_t securinit_main(const struct securinit_boot_info *info)
 #elif defined(__x86_64__)
     if (info->exception_router.handle) {
         if (!securinit_x86_isolation_probe(info,
-                                           (uint64_t)(uintptr_t)g_admin_record)) {
+                                           (uint64_t)(uintptr_t)g_admin_record,
+                                           gate)) {
             return 0;
         }
         uint64_t proof = SECURINIT_RING3_DENIED_MARKER;

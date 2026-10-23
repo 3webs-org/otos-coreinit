@@ -1007,6 +1007,8 @@ static void securinit_status_sink(void *data, uint32_t method_id,
         kprintf("[securinit] EL0 outbound Cap'n Proto IPC traversed wrapper-owned Gate\n");
     } else if (marker == SECURINIT_RING3_DENIED_MARKER) {
         kprintf("[securinit] ring3 hardware denied access to Admin; wrapper regained ring0\n");
+    } else if (marker == SECURINIT_RING3_IPC_MARKER) {
+        kprintf("[securinit] ring3 outbound Cap'n Proto IPC traversed wrapper-owned Gate\n");
     }
 }
 

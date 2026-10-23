@@ -3,7 +3,8 @@
 
 BOOT_DISK is a GRUB xnu FAT image containing the current x86 saski Mach-O.
 The wrapper denies Admin via hardware #PF, rejects an ungranted endpoint,
-intercepts the one INT80 path, then INT3 returns to its trusted ring-0 stack.
+then mediates a granted Gate Cap'n Proto request via its OWN INT80 entry.
+INT3 returns to its trusted ring-0 stack.
 """
 
 import os
@@ -54,7 +55,8 @@ with tempfile.TemporaryDirectory(prefix="ring3-grub-") as temp:
         while time.monotonic() < deadline:
             text = LOG.read_text(errors="ignore") if LOG.exists() else ""
             if ("ring3 hardware denied access to Admin" in text and
-                    "Gate denied 1 request(s), forwarded 1" in text):
+                    "ring3 outbound Cap'n Proto IPC traversed wrapper-owned Gate" in text and
+                    "Gate denied 1 request(s), forwarded 2" in text):
                 break
             if process.poll() is not None:
                 raise RuntimeError("QEMU exited before ring3 proof")
@@ -78,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="ring3-grub-") as temp:
                 "[grubcfg] kernel loaded, booting" not in text):
             raise RuntimeError(f"ring3 denial mismatch CR2={cr2:#x}, "
                                f"Admin={admin:#x}; see {TRACE}")
-        print(f"x86 wrapper-owned ring3 denial: PASS "
+        print(f"x86 wrapper-owned ring3 IPC: PASS "
               f"(Admin CR2={cr2:#x}, 2×INT80, INT3→ring0)")
     finally:
         process.terminate()

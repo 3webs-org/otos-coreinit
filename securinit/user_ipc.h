@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "../include/securinit_abi.h"
 
 /* Wrapper-owned EL0 request descriptor. This is NOT a saski syscall ABI:
  * securinit installs its own lower-EL SVC callback, resolves local_endpoint
@@ -37,3 +38,16 @@ enum wrapper_ipc_status {
     WRAPPER_IPC_BOUNDS = -3,
     WRAPPER_IPC_REJECTED = -4,
 };
+
+typedef int (*wrapper_invoke_fn_t)(capability_t, uint32_t, const void *, size_t,
+                                   void *, size_t, size_t *);
+
+/* Trusted per-wrapper transport shared by ARM SVC and x86 INT80 callbacks.
+ * Validate descriptor and guest ranges BEFORE any copyin. No saski trap,
+ * native capability value, or callback pointer crosses to the guest. */
+int64_t wrapper_dispatch_guest_call(uint64_t user_base, uint64_t user_size,
+                                    capability_t granted_gate,
+                                    wrapper_invoke_fn_t invoke,
+                                    uint64_t descriptor_addr,
+                                    uint8_t *request_buffer,
+                                    uint8_t *response_buffer);

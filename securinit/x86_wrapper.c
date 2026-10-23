@@ -4,6 +4,7 @@
 #include "x86_wrapper.h"
 #include "user_ipc.h"
 #include "capnp_build.h"
+#include "generated_schemas.h"
 #include <stdint.h>
 
 #define PAGE_SIZE 4096ull
@@ -17,8 +18,11 @@
 static uint64_t g_user_pt[512] __attribute__((aligned(4096)));
 static uint8_t g_ring0_stack[16384] __attribute__((aligned(16)));
 static uint64_t g_user_base, g_user_size, g_forbidden;
-static uint64_t g_denied_access, g_ipc_denied, g_exits;
+static uint64_t g_denied_access, g_ipc_denied, g_ipc_forwarded, g_exits;
 static uint64_t g_resume_rsp, g_resume_pc, g_saved_flags;
+static capability_t g_granted_gate;
+static wrapper_invoke_fn_t g_priv_invoke;
+static uint8_t g_request[WRAPPER_IPC_MAX_BYTES], g_response[WRAPPER_IPC_MAX_BYTES];
 
 extern const uint8_t securinit_x86_probe_start[] __attribute__((visibility("hidden")));
 extern const uint8_t securinit_x86_probe_end[] __attribute__((visibility("hidden")));
@@ -38,12 +42,6 @@ void securinit_x86_save_resume(uint64_t rsp, uint64_t pc)
 uint64_t securinit_x86_resume_rsp(void) { return g_resume_rsp; }
 uint64_t securinit_x86_resume_pc(void) { return g_resume_pc; }
 uint64_t securinit_x86_resume_flags(void) { return g_saved_flags; }
-
-static int within_user(uint64_t addr, uint64_t len)
-{
-    return addr >= g_user_base && len <= g_user_size &&
-           addr - g_user_base <= g_user_size - len;
-}
 
 int securinit_x86_fault_hook(uint64_t *frame, uint64_t error, uint64_t cr2)
 {
@@ -69,18 +67,12 @@ int securinit_x86_dispatch(uint64_t *frame, uint64_t vector)
         return 1; /* assembly jumps back to the saved ring-0 stack */
     }
     if (vector == 0x80) {
-        uint64_t descriptor = frame[8]; /* guest RDI */
-        if (!within_user(descriptor, sizeof(wrapper_ipc_call_t))) {
-            frame[14] = (uint64_t)(int64_t)WRAPPER_IPC_BAD_DESCRIPTOR;
-        } else {
-            wrapper_ipc_call_t call;
-            const uint8_t *p = (const uint8_t *)(uintptr_t)descriptor;
-            for (size_t i = 0; i < sizeof(call); i++) ((uint8_t *)&call)[i] = p[i];
-            frame[14] = (uint64_t)(int64_t)(
-                call.local_endpoint != WRAPPER_GATE_ENDPOINT
-                    ? WRAPPER_IPC_BAD_ENDPOINT : WRAPPER_IPC_REJECTED);
-        }
-        g_ipc_denied++;
+        int64_t status = wrapper_dispatch_guest_call(
+            g_user_base, g_user_size, g_granted_gate, g_priv_invoke,
+            frame[8], g_request, g_response); /* guest RDI */
+        frame[14] = (uint64_t)status; /* restored guest RAX */
+        if (status == WRAPPER_IPC_OK) g_ipc_forwarded++;
+        else g_ipc_denied++;
     }
     return 0; /* iretq back to the CPL3 probe */
 }
@@ -91,7 +83,8 @@ static void flush_page_tables(uint64_t root)
 }
 
 int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
-                                  uint64_t privileged_addr)
+                                  uint64_t privileged_addr,
+                                  capability_t granted_gate)
 {
     uint64_t base = info->user_region_base;
     if (!info->x86_pml4_phys || !info->exception_router.handle ||
@@ -124,14 +117,20 @@ int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
     g_user_base = base;
     g_user_size = REGION_SIZE;
     g_forbidden = privileged_addr;
-    g_denied_access = g_ipc_denied = g_exits = 0;
+    g_granted_gate = granted_gate;
+    g_priv_invoke = info->kernel_invoke;
+    g_denied_access = g_ipc_denied = g_ipc_forwarded = g_exits = 0;
     uint64_t denied_addr = base + 0x2000, granted_addr = base + 0x2080;
     uint64_t result_addr = base + 0x4000;
+    uint64_t marker = SECURINIT_RING3_IPC_MARKER;
+    size_t user_message_len = capnp_build_flat((void *)(uintptr_t)(base + 0x3000),
+                                                24, &marker, 1);
     wrapper_ipc_call_t call = {
         .local_endpoint = WRAPPER_GATE_ENDPOINT + 1,
         .version = WRAPPER_IPC_VERSION,
+        .method_id = GATE_METHOD_INVOKE,
         .request_ptr = base + 0x3000,
-        .request_len = 24,
+        .request_len = user_message_len,
         .response_ptr = base + 0x3100,
         .response_capacity = 24,
     };
@@ -182,8 +181,12 @@ int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
     pml4[0] = old_pml4;
     flush_page_tables(info->x86_pml4_phys);
     const uint64_t *guest_results = (const uint64_t *)(uintptr_t)result_addr;
+    const wrapper_ipc_call_t *granted =
+        (const wrapper_ipc_call_t *)(uintptr_t)granted_addr;
+    uint64_t forwarded = capnp_read_flat((const void *)(uintptr_t)(base + 0x3100))[0];
     return result == 0 && g_denied_access == 1 && g_exits == 1 &&
-           g_ipc_denied == 2 &&
+           g_ipc_denied == 1 && g_ipc_forwarded == 1 &&
            guest_results[0] == (uint64_t)(int64_t)WRAPPER_IPC_BAD_ENDPOINT &&
-           guest_results[1] == (uint64_t)(int64_t)WRAPPER_IPC_REJECTED;
+           guest_results[1] == WRAPPER_IPC_OK &&
+           granted->response_len == 24 && forwarded == 1;
 }

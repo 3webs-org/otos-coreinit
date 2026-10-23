@@ -7,5 +7,6 @@
  * and denial of direct Admin memory access. coreinit only installs IDT/TSS
  * hardware routes through a factory-created router object. */
 int securinit_x86_isolation_probe(const struct securinit_boot_info *info,
-                                  uint64_t privileged_addr);
+                                  uint64_t privileged_addr,
+                                  capability_t granted_gate);
 #endif

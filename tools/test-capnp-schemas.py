@@ -115,5 +115,11 @@ int main(void) {
     run(compiler, "-std=c11", f"-I{output}", f"-I{SASKI_KERNEL}",
         str(output / "generated_schemas.c"), str(check_c), "-o", str(executable))
     run(str(executable))
+    ipc_check = output / "check-user-ipc"
+    run(compiler, "-std=c11", f"-I{output}", f"-I{SASKI_KERNEL}",
+        f"-I{ROOT / 'securinit'}", f"-I{ROOT / 'coreinit'}",
+        str(ROOT / "securinit/user_ipc.c"), str(ROOT / "tools/test-user-ipc.c"),
+        "-o", str(ipc_check))
+    run(str(ipc_check))
 
 print("Cap'n Proto source → 15 generated object tables / 38 methods: ABI PASS")
