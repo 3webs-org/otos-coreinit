@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "cap.h"
 #include "../include/init_abi.h"
 
 /* Per-core state. The planned destination for what today is a scattered
@@ -22,6 +23,39 @@
  * per architecture implements the register access. */
 struct core_state {
     uint64_t core_id;
+
+    /* serial_x86_64.c/serial_aarch64.c's own per-core log tag, so
+     * interleaved output from multiple simultaneously-running cores can
+     * be attributed. -1 means "not yet set" (prints untagged, e.g.
+     * before a core knows its own ID) -- NOT the zero-initialized
+     * default, so whoever sets up a core_state (coreinit_main, for both
+     * the BSP's static instance and an AP's freshly-allocated one) must
+     * explicitly set this to -1 before anything can log; a zero left as
+     * the implicit default would misreport as "core 0" instead of
+     * "untagged". */
+    int core_tag;
+
+    /* job_memory.c's own PML4 physical address for THIS core -- used to
+     * fault-handle a non-owned STREAM/COW resource locally. Was
+     * job_memory.c's own file-scope global; moved here first since it's
+     * a lone scalar with one writer (job_memory_init) and reads confined
+     * to job_memory_acquire_resource. */
+    uint64_t my_pml4_phys;
+
+    /* coreinit.c's cross-core-signal self-test flag for THIS core. Despite
+     * the name, this is a real functional self-test that runs on every
+     * core's own boot today (job_timer_bringup, not BSP-gated): each core
+     * signals itself and waits for its own ISR to set this back. Left as
+     * a bare global it would be a genuine cross-core race under shared
+     * code (two cores corrupting each other's result). */
+    volatile int cross_core_signal_test_seen;
+
+    /* coreinit.c's per-core capability/proxy handles reaching the ONE
+     * shared hardware mutex (guarding legacy PIC/PIT access). Each core
+     * gets its own handle to the same shared object -- the handles are
+     * per-core, not the object they name. */
+    capability_t hw_mutex_manager;
+    uint64_t hw_mutex_id;
 };
 
 /* Set THIS core's own pointer. Called once per core, early in its own

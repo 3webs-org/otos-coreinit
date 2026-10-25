@@ -482,13 +482,31 @@ static void tick_counter_handler(void *data, uint32_t method_id,
 
 static int (*g_hw_mutex_invoke)(capability_t, uint32_t, const void *, size_t,
                                 void *, size_t, size_t *);
-static capability_t g_hw_mutex_manager;
-static uint64_t g_hw_mutex_id;
+
+/* g_hw_mutex_manager/g_hw_mutex_id (the capability handle and mutex ID --
+ * per-core, see core_state.h) now live in struct core_state.
+ * g_hw_mutex_invoke stays a plain global: it's always this core's own
+ * local kernel_invoke regardless of role (see the two assignment sites
+ * below), not a per-core value in the same sense. */
 
 static void hw_mutex_lock(void)
 {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        /* No core_state means no recorded handle to lock through --
+         * unlike the other core_state fields, skipping this is NOT
+         * safe (the caller proceeds believing it holds exclusive
+         * access to shared PIC/PIT hardware when it does not). This
+         * can only happen on an AP before a real bootloader supplies
+         * the free-memory pool core_state_alloc_ap needs -- loud and
+         * stuck is better than silently racing real hardware. */
+        kprintf("[coreinit] PANIC: hw_mutex_lock with no core_state\n");
+        for (;;) {
+            arch_cpu_wait_for_interrupt();
+        }
+    }
     uint8_t req[24];
-    size_t req_len = capnp_build_flat(req, sizeof(req), &g_hw_mutex_id, 1);
+    size_t req_len = capnp_build_flat(req, sizeof(req), &cs->hw_mutex_id, 1);
     /* METHOD_LOCK is try-only (see mutex_mgr.c) -- it never blocks
      * inside the handler, so contention is handled HERE, by actually
      * yielding the core (arch_cpu_wait_for_interrupt, woken by the
@@ -496,7 +514,7 @@ static void hw_mutex_lock(void)
     for (;;) {
         uint8_t resp[24];
         size_t resp_len = 0;
-        if (g_hw_mutex_invoke(g_hw_mutex_manager, 1, req, req_len, resp,
+        if (g_hw_mutex_invoke(cs->hw_mutex_manager, 1, req, req_len, resp,
                               sizeof(resp), &resp_len) &&
             resp_len >= 8 && capnp_read_flat(resp)[0] != 0) {
             return; /* acquired */
@@ -507,9 +525,13 @@ static void hw_mutex_lock(void)
 
 static void hw_mutex_unlock(void)
 {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return; /* hw_mutex_lock already panicked before this could matter. */
+    }
     uint8_t req[24];
-    size_t req_len = capnp_build_flat(req, sizeof(req), &g_hw_mutex_id, 1);
-    g_hw_mutex_invoke(g_hw_mutex_manager, 2, req, req_len, NULL, 0, NULL);
+    size_t req_len = capnp_build_flat(req, sizeof(req), &cs->hw_mutex_id, 1);
+    g_hw_mutex_invoke(cs->hw_mutex_manager, 2, req, req_len, NULL, 0, NULL);
 }
 
 /* ---- Jobs: the actual boot-sequence work, run one slice at a time by
@@ -546,15 +568,20 @@ typedef struct {
  * record without needing its own separate plumbing. */
 static uint32_t g_timer_calibration = 0;
 
-/* Set by cross_core_signal_test_handler (an ISR-context callback --
- * kept to a single flag write, no kprintf from inside the handler
- * itself, matching the same discipline the LAPIC timer ISR already
- * follows) and read back afterward from ordinary code. */
-static volatile int g_cross_core_signal_test_seen;
-
+/* cross_core_signal_test_seen (struct core_state) is set by
+ * cross_core_signal_test_handler (an ISR-context callback -- kept to a
+ * single flag write, no kprintf from inside the handler itself, matching
+ * the same discipline the LAPIC timer ISR already follows) and read back
+ * afterward from ordinary code. core_state_get() is a plain register
+ * read, safe to call from interrupt context same as anywhere else; a
+ * NULL core_state here just means the self-test reports FAIL (the flag
+ * was never set), not a hazard the way a NULL hw_mutex would be. */
 static void cross_core_signal_test_handler(void)
 {
-    g_cross_core_signal_test_seen = 1;
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->cross_core_signal_test_seen = 1;
+    }
 }
 
 static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
@@ -604,7 +631,10 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
                "[coreinit]   cross_core_signal: handler installed, target "
                "%u, self-test...\n",
                (unsigned)cross_core_signal_my_target());
-    g_cross_core_signal_test_seen = 0;
+    struct core_state *my_cs = core_state_get();
+    if (my_cs != NULL) {
+        my_cs->cross_core_signal_test_seen = 0;
+    }
     cross_core_signal_send(cross_core_signal_my_target());
     /* A self-IPI via the Local APIC is delivered asynchronously, same
      * as any interrupt -- wait for it to actually land rather than
@@ -615,12 +645,14 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
      * arch_cpu_wait_for_interrupt actually stops the core until the next
      * interrupt; bounded so a genuinely broken
      * signal path reports FAIL instead of hanging boot forever. */
-    for (int spins = 0; spins < 1000 && !g_cross_core_signal_test_seen;
+    for (int spins = 0;
+        spins < 1000 && (my_cs == NULL || !my_cs->cross_core_signal_test_seen);
         spins++) {
         arch_cpu_wait_for_interrupt();
     }
     job_kprintf(self_job_id, "[coreinit]   cross_core_signal: self-test %s\n",
-               g_cross_core_signal_test_seen ? "PASS" : "FAIL");
+               (my_cs != NULL && my_cs->cross_core_signal_test_seen)
+                   ? "PASS" : "FAIL");
 
     capability_t irq_manager =
         create_object(irq_manager_handler, NULL, &g_irq_manager_table,
@@ -1281,10 +1313,13 @@ void coreinit_main(struct init_boot_info *info)
         const uint64_t *id_out = capnp_read_flat(create_resp);
 
         g_hw_mutex_invoke = g_kernel_invoke;
-        g_hw_mutex_manager = mutex_manager;
-        g_hw_mutex_id = id_out[0];
+        struct core_state *cs = core_state_get();
+        if (cs != NULL) {
+            cs->hw_mutex_manager = mutex_manager;
+            cs->hw_mutex_id = id_out[0];
+        }
         kprintf("[coreinit] hardware mutex created, id %u\n",
-                (unsigned)g_hw_mutex_id);
+                (unsigned)id_out[0]);
     } else {
         kprintf("\n[coreinit] === discovered shared services from the BSP "
                 "===\n");
@@ -1302,19 +1337,25 @@ void coreinit_main(struct init_boot_info *info)
         capability_t remote_mutex_manager;
         remote_mutex_manager.handle = info->mutex_manager_handle;
 
-        /* A LOCAL proxy, not the raw remote pair -- from here on,
-         * g_hw_mutex_manager is an ordinary local capability, invoked
-         * through the ordinary local g_kernel_invoke, same as anything
-         * else. hw_mutex_lock/unlock below don't need to know or care
-         * that it's actually remote. */
-        g_hw_mutex_manager = create_proxy(remote_mutex_manager, bsp_invoke,
-                                          &g_mutex_manager_table,
-                                          MUTEX_MGR_SCHEMA_MUTEX_MANAGER);
+        /* A LOCAL proxy, not the raw remote pair -- from here on, this
+         * core's own core_state->hw_mutex_manager is an ordinary local
+         * capability, invoked through the ordinary local
+         * g_kernel_invoke, same as anything else. hw_mutex_lock/unlock
+         * don't need to know or care that it's actually remote. */
+        capability_t local_hw_mutex_manager =
+            create_proxy(remote_mutex_manager, bsp_invoke,
+                        &g_mutex_manager_table,
+                        MUTEX_MGR_SCHEMA_MUTEX_MANAGER);
         g_hw_mutex_invoke = g_kernel_invoke;
-        g_hw_mutex_id = info->hardware_mutex_id;
+        struct core_state *cs = core_state_get();
+        if (cs != NULL) {
+            cs->hw_mutex_manager = local_hw_mutex_manager;
+            cs->hw_mutex_id = info->hardware_mutex_id;
+        }
         kprintf("[coreinit] mutex_manager reachable via local proxy handle "
                 "%u, hardware mutex id %u\n",
-                (unsigned)g_hw_mutex_manager.handle, (unsigned)g_hw_mutex_id);
+                (unsigned)local_hw_mutex_manager.handle,
+                (unsigned)info->hardware_mutex_id);
     }
 
     /* The main cluster scheduler: created here (BSP) or discovered here
@@ -1466,7 +1507,10 @@ void coreinit_main(struct init_boot_info *info)
         smp_ctx.info = info;
         smp_ctx.memory_manager = memory_manager;
         smp_ctx.mutex_manager = mutex_manager;
-        smp_ctx.hw_mutex_id = g_hw_mutex_id;
+        {
+            struct core_state *this_cs = core_state_get();
+            smp_ctx.hw_mutex_id = this_cs != NULL ? this_cs->hw_mutex_id : 0;
+        }
         smp_ctx.cluster_scheduler = cluster_scheduler;
         smp_ctx.serial_resource = g_serial_resource;
         smp_ctx.is_bsp = is_bsp;

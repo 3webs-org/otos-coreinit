@@ -3,12 +3,17 @@
 #include "cluster_scheduler.h"
 #include "pagefault.h"
 #include "serial.h"
-
-static uint64_t g_my_pml4_phys;
+#include "core_state.h"
 
 void job_memory_init(uint64_t my_pml4_phys)
 {
-    g_my_pml4_phys = my_pml4_phys;
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        kprintf("[job_memory] no core_state -- this core's own PML4 "
+                "cannot be recorded\n");
+        return;
+    }
+    cs->my_pml4_phys = my_pml4_phys;
 }
 
 job_result_t job_memory_try_acquire_local(uint64_t size, uint64_t kind,
@@ -94,14 +99,20 @@ int job_memory_acquire_resource(uint64_t resource_id, job_memory_slice_t *out)
         return 0;
     }
 
-    pagefault_init(g_my_pml4_phys);
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return 0; /* No recorded PML4 for this core to fault against. */
+    }
+    uint64_t my_pml4_phys = cs->my_pml4_phys;
+
+    pagefault_init(my_pml4_phys);
 
     uint64_t region_start = descriptor & ~0x1FFFFFull;
     uint64_t region_end = (descriptor + capacity + 0x1FFFFFull) & ~0x1FFFFFull;
     for (uint64_t region = region_start; region < region_end;
          region += 0x200000ull) {
-        if (!pagefault_split_region(g_my_pml4_phys, region) &&
-            !pagefault_debug_read_pte(g_my_pml4_phys, region)) {
+        if (!pagefault_split_region(my_pml4_phys, region) &&
+            !pagefault_debug_read_pte(my_pml4_phys, region)) {
             return 0; /* Neither newly split nor already page-granular. */
         }
     }
@@ -110,8 +121,8 @@ int job_memory_acquire_resource(uint64_t resource_id, job_memory_slice_t *out)
     uint64_t page_end = (descriptor + capacity + 0xFFFull) & ~0xFFFull;
     for (uint64_t page = page_start; page < page_end; page += 0x1000ull) {
         int ok = sync_kind == RESOURCE_SYNC_STREAM
-            ? pagefault_mark_absent(g_my_pml4_phys, page)
-            : pagefault_mark_cow(g_my_pml4_phys, page);
+            ? pagefault_mark_absent(my_pml4_phys, page)
+            : pagefault_mark_cow(my_pml4_phys, page);
         if (!ok) {
             return 0; /* Never claim STREAM/COW protection we did not set. */
         }

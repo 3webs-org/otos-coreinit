@@ -1,5 +1,6 @@
 #include "serial.h"
 #include "mmio.h"
+#include "core_state.h"
 #include <stdarg.h>
 #include <stdint.h>
 
@@ -41,18 +42,16 @@
 static uint64_t g_pl011_base = 0;
 static int g_ready = 0;
 
-/* Set once per core (see serial_set_core_tag) so interleaved output from
- * multiple simultaneously-running cores can actually be attributed --
- * without this, two cores' concurrently-printed lines on the same UART
- * are otherwise indistinguishable, which turned out to matter the first
- * time something needed debugging across more than one core. -1 means
- * "not yet set" (prints with no tag, e.g. before a core knows its own
- * ID). */
-static int g_core_tag = -1;
-
+/* core_tag now lives in struct core_state (see core_state.h's own note
+ * on why -1, not core_state's zero default, means "not yet set"). Falls
+ * back to untagged if this core has no core_state yet, the same posture
+ * as every other core_state consumer. */
 void serial_set_core_tag(int core_id)
 {
-    g_core_tag = core_id;
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->core_tag = core_id;
+    }
 }
 
 /* Called by the FDT parser (or boot code) once the UART base address is
@@ -161,9 +160,10 @@ static void put_int(long v)
  * integer forms, and %%. Not a general libc printf. */
 void kvprintf(const char *fmt, va_list ap)
 {
-    if (g_core_tag >= 0) {
+    struct core_state *cs = core_state_get();
+    if (cs != NULL && cs->core_tag >= 0) {
         putc('[');
-        put_uint((unsigned long)g_core_tag, 10, 0);
+        put_uint((unsigned long)cs->core_tag, 10, 0);
         putc(']');
         putc(' ');
     }
