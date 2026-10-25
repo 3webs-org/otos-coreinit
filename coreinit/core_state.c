@@ -36,3 +36,9 @@ struct core_state *core_state_alloc_ap(const struct init_boot_info *info)
     }
     return cs;
 }
+
+void core_state_init_defaults(struct core_state *cs)
+{
+    cs->core_tag = -1;
+    cs->current_job = -1;
+}

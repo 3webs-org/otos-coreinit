@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "cap.h"
+#include "job_exec.h"
 #include "../include/init_abi.h"
 
 /* Per-core state. The planned destination for what today is a scattered
@@ -56,7 +57,33 @@ struct core_state {
      * per-core, not the object they name. */
     capability_t hw_mutex_manager;
     uint64_t hw_mutex_id;
+
+    /* job_exec.c's own per-core cooperative scheduler: its job table,
+     * the job-stack allocation bitmap, which slot is currently running
+     * (-1 means none -- see core_state_init_defaults, same reasoning as
+     * core_tag above), and the raw stacks themselves. The stacks are
+     * embedded directly (JOB_EXEC_MAX_RESIDENT * JOB_EXEC_STACK_SIZE =
+     * 512 KiB today) rather than a separate allocation reached by
+     * pointer -- deliberately: this is still smaller than the OLD
+     * per-core model's fixed 4 MiB CORE_REGION_SIZE reservation (see
+     * smp_layout.h), so embedding it costs nothing the old model didn't
+     * already spend, and avoids a second allocation with its own
+     * failure mode. */
+    job_exec_slot_t job_table[JOB_EXEC_MAX_RESIDENT];
+    int job_stack_used[JOB_EXEC_MAX_RESIDENT];
+    int current_job;
+    uint8_t job_stacks[JOB_EXEC_MAX_RESIDENT][JOB_EXEC_STACK_SIZE]
+        __attribute__((aligned(16)));
 };
+
+/* Sets every field whose correct "not yet set" value is NOT the
+ * zero-initialized default (core_tag, current_job: both use -1 for
+ * "none", since 0 is a real core/slot index) -- called once per core,
+ * immediately after that core's own core_state is obtained (both the
+ * BSP's static instance and an AP's freshly bump-allocated one), before
+ * core_state_set makes it reachable. A field whose correct default
+ * genuinely IS zero (every other field above) needs nothing here. */
+void core_state_init_defaults(struct core_state *cs);
 
 /* Set THIS core's own pointer. Called once per core, early in its own
  * entry -- coreinit_main for the BSP, immediately on entry for an AP. */

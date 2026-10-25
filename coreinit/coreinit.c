@@ -1215,10 +1215,12 @@ void coreinit_main(struct init_boot_info *info)
      * -- non-fatal, since nothing yet depends on it. */
     if (is_bsp) {
         static struct core_state bsp_core_state;
+        core_state_init_defaults(&bsp_core_state);
         core_state_set(&bsp_core_state);
     } else {
         struct core_state *cs = core_state_alloc_ap(info);
         if (cs != NULL) {
+            core_state_init_defaults(cs);
             core_state_set(cs);
         } else {
             kprintf("[coreinit] no free-memory pool for this core's "
