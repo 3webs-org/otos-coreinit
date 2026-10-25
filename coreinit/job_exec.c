@@ -31,7 +31,7 @@ void job_exec_free_stack(int slot)
 
 /* The initial-frame builder is architecture-specific -- see
  * job_exec_x86_64.c / job_exec_aarch64.c, selected per-arch by
- * build_coreinit.sh. Everything below this point is arch-neutral
+ * CMakeLists.txt. Everything below this point is arch-neutral
  * bookkeeping that only ever handles the opaque saved_rsp value that
  * builder (or the switch primitive) produced. */
 

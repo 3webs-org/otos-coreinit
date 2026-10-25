@@ -13,7 +13,7 @@
  * about that is an oversight to fix later in *this* file.
  *
  * This file is compiled as a Mach-O binary, not ELF, targeting
- * <arch>-apple-darwin for whichever ARCH build_coreinit.sh selected; it
+ * <arch>-apple-darwin for whichever toolchain file was selected; it
  * includes no architecture-specific header.
  */
 

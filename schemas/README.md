@@ -1,7 +1,7 @@
 # Coreinit wire schemas
 
 `coreinit.capnp` defines all ten coreinit IPC interfaces and their method IDs.
-`build_coreinit.sh` compiles it with `tools/gen-capnp-schemas.py` on **every**
+`CMakeLists.txt` compiles it with `tools/gen-capnp-schemas.py` on **every**
 x86_64 and aarch64 build, producing `build/generated_schemas.{c,h}`. Only
 const struct/method/object arrays and static per-instance descriptor bridges
 are linked into coreinit; no schema text, Cap'n Proto compiler, heap

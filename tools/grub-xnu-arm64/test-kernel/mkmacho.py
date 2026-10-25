@@ -8,7 +8,7 @@ x0..x28, fp, lr, sp).
 usage: mkmacho.py <code.bin> <out.macho>"""
 import struct, sys
 
-BASE = 0x40200000          # build_coreinit.sh's aarch64 link base
+BASE = 0x40200000          # coreinit's aarch64 PAGEZERO / link base (see CMakeLists.txt)
 CODE_OFF = 0x1000
 SIZE = 0x2000
 

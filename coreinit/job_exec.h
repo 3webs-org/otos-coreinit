@@ -15,7 +15,7 @@
  * comment on each side. job_exec_init's declaration stays here because
  * it is arch-neutral; its two implementations live in
  * job_exec_x86_64.c / job_exec_aarch64.c, selected per-arch by the
- * build (build_coreinit.sh), never by #ifdef. */
+ * build (CMakeLists.txt), never by #ifdef. */
 
 /* Constructs a fake "already saved" context at the top of a fresh
  * stack, so the very first switch INTO this job looks, to the restore

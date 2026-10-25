@@ -4,11 +4,13 @@
 # Usage:
 #   tools/dev-env.sh [command...]
 #
-# Default command: ./build_coreinit.sh
+# Default command: configure (if needed) and build coreinit with CMake for
+# ARCH (x86_64 or aarch64, default x86_64). Switching ARCH on an existing
+# build/ directory isn't supported by CMake -- rm -rf build first.
 #
-# Sets LLVM_BIN, CC, LD64 to point at nix-resolved ld64.lld and Apple clang,
-# then execs the given command. Nix store paths are resolved at runtime
-# (not hardcoded) so this works across nixpkgs updates.
+# Sets LLVM_BIN, CC, LD64 to point at nix-resolved ld64.lld and Apple clang.
+# Nix store paths are resolved at runtime (not hardcoded) so this works
+# across nixpkgs updates.
 #
 # Apple clang CAN emit x86_64-apple-darwin objects; we only need Nix for
 # ld64.lld (the linker), since Xcode's ld requires libSystem for dynamic
@@ -16,10 +18,13 @@
 #
 # Example:
 #   tools/dev-env.sh                    # builds coreinit
-#   tools/dev-env.sh ./build_coreinit.sh
+#   ARCH=aarch64 tools/dev-env.sh        # builds coreinit for aarch64
 #   tools/dev-env.sh sh -c 'echo $LLVM_BIN'
 
 set -e
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ARCH=${ARCH:-x86_64}
 
 # Resolve lld-18 from Nix (ld64.lld is the only tool we need from Nix)
 echo "Resolving ld64.lld from Nix..." >&2
@@ -39,9 +44,12 @@ if ! "$LD64" --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# Default command: build_coreinit.sh
+# Default command: configure + build with CMake
 if [ $# -eq 0 ]; then
-    set -- ./build_coreinit.sh
+    cmake -S "$ROOT" -B "$ROOT/build" \
+        -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/toolchain-$ARCH.cmake" \
+        -DCMAKE_C_COMPILER="$CC" -DLD64="$LD64"
+    set -- cmake --build "$ROOT/build"
 fi
 
 exec "$@"

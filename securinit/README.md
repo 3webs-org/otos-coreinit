@@ -1,6 +1,6 @@
 # securinit bootstrap
 
-`build_coreinit.sh` links securinit as a separate x86_64 or arm64 Mach-O. A BSP
+`CMakeLists.txt` links securinit as a separate x86_64 or arm64 Mach-O. A BSP
 coreinit job claims a region through the memory-manager object, loads the image,
 and passes only the factory capability, a status-sink capability, and the
 existing `kernel_invoke` bootstrap pointer. securinit creates Status, Gate,

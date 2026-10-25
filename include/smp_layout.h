@@ -150,7 +150,7 @@
  * init with target_base=0, meaning "wherever init's own vmaddr already
  * says" (see kernel/macho.h's own note on why), and init's own build
  * declares that vmaddr itself (this project's own reference
- * implementation does so via build_coreinit.sh's own -pagezero_size).
+ * implementation does so via CMakeLists.txt's own -pagezero_size).
  * This constant now exists purely so that value is documented
  * somewhere and can be cross-checked against init's own memory-manager
  * reservation of the same span (mem_mgr.c, part of init itself, not

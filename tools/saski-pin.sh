@@ -9,8 +9,8 @@
 # saski's working tree are deliberately excluded.
 #
 # Example:
-#   SASKI_ROOT=$(tools/saski-pin.sh) sh build_coreinit.sh
-#   SASKI_ROOT=$(tools/saski-pin.sh v1.2.3) sh build_coreinit.sh
+#   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-x86_64.cmake -DSASKI_ROOT=$(tools/saski-pin.sh)
+#   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-x86_64.cmake -DSASKI_ROOT=$(tools/saski-pin.sh v1.2.3)
 
 set -e
 
