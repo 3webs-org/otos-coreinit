@@ -5,16 +5,16 @@
 #include "job_exec.h"
 #include "../include/init_abi.h"
 
-/* Per-core state. The planned destination for what today is a scattered
- * set of globals across job_exec.c, serial_*.c, irq_*.c, the timer
- * backends, job_memory.c, and pagefault_*.c -- all of them currently safe
- * only because each core runs its own independent byte-for-byte copy of
- * the whole image, which this project is moving away from (see TODO.md /
- * the boot-protocol redesign notes). Migration happens subsystem by
- * subsystem; this struct is deliberately a stub for now -- nothing reads
- * or writes a real field here yet. This file only wires up the mechanism
- * (role detection, the per-core pointer register, the AP allocator) with
- * zero behavior change elsewhere.
+/* Per-core state. The ongoing destination for what used to be a
+ * scattered set of globals across job_exec.c, serial_*.c, irq_*.c, the
+ * timer backends, job_memory.c, and pagefault_*.c -- all of them
+ * formerly safe only because each core ran its own independent
+ * byte-for-byte copy of the whole image, which this project is moving
+ * away from (see TODO.md / the boot-protocol redesign notes). Migration
+ * happens subsystem by subsystem, each verified independently; not
+ * every subsystem listed above has moved yet (irq_*.c and
+ * pagefault_*.c's own per-core blocks are still plain globals as of
+ * this comment -- see TODO.md for exactly what's left).
  *
  * Reached via a dedicated per-core pointer register (TPIDR_EL1 on
  * aarch64, a dedicated MSR on x86_64) rather than threaded through every
@@ -74,6 +74,17 @@ struct core_state {
     int current_job;
     uint8_t job_stacks[JOB_EXEC_MAX_RESIDENT][JOB_EXEC_STACK_SIZE]
         __attribute__((aligned(16)));
+
+    /* lapic_timer_x86_64.c/timer_aarch64.c's own per-core timer state:
+     * THIS core's own tick count and the capability bound to receive its
+     * ticks. Genuinely per-core on both architectures -- x86_64's LAPIC
+     * timer and aarch64's generic timer both fire independently on
+     * every core (unlike x86's legacy-PIC-is-BSP-only case elsewhere).
+     * g_timer_freq_hz (aarch64 only) is likewise per-core -- CNTFRQ_EL0
+     * is read fresh per core, not assumed shared. */
+    uint64_t timer_ticks;
+    capability_t timer_target;
+    uint64_t timer_freq_hz; /* aarch64 only; unused on x86_64 */
 };
 
 /* Sets every field whose correct "not yet set" value is NOT the

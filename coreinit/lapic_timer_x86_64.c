@@ -6,6 +6,7 @@
 #include "irq.h"
 #include "mmio.h"
 #include "serial.h"
+#include "core_state.h"
 
 #define LAPIC_REG_EOI 0x0B0
 #define LAPIC_REG_SVR 0x0F0
@@ -36,10 +37,11 @@ struct interrupt_frame {
 };
 
 static uint32_t g_lapic_base;
-static uint64_t g_ticks = 0;
-static capability_t g_timer_target;
 static int (*g_kernel_invoke)(capability_t, uint32_t, const void *, size_t,
                               void *, size_t, size_t *);
+/* timer_ticks/timer_target now live in struct core_state -- see that
+ * header's own note on why (genuinely per-core on every architecture,
+ * unlike g_lapic_base/g_kernel_invoke above). */
 
 static uint32_t lapic_read(uint32_t reg)
 {
@@ -54,13 +56,19 @@ static void lapic_write(uint32_t reg, uint32_t val)
 __attribute__((interrupt)) static void isr_lapic_timer(struct interrupt_frame *frame)
 {
     (void)frame;
-    g_ticks++;
-    if (g_timer_target.handle != 0) {
-        uint64_t word = g_ticks;
-        uint8_t msg[24];
-        size_t msg_len = capnp_build_flat(msg, sizeof(msg), &word, 1);
-        g_kernel_invoke(g_timer_target, 0, msg, msg_len, NULL, 0, NULL);
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->timer_ticks++;
+        if (cs->timer_target.handle != 0) {
+            uint64_t word = cs->timer_ticks;
+            uint8_t msg[24];
+            size_t msg_len = capnp_build_flat(msg, sizeof(msg), &word, 1);
+            g_kernel_invoke(cs->timer_target, 0, msg, msg_len, NULL, 0, NULL);
+        }
     }
+    /* EOI happens regardless of core_state availability -- skipping it
+     * would stall this core's LAPIC timer forever, a much worse outcome
+     * than just missing one tick's dispatch. */
     lapic_write(LAPIC_REG_EOI, 0); /* any value acknowledges a LAPIC-local
                                     * interrupt -- distinct from, and
                                     * unrelated to, the legacy 8259 PIC's
@@ -107,7 +115,10 @@ void lapic_timer_start(
 {
     g_lapic_base = lapic_base;
     g_kernel_invoke = kernel_invoke_fn;
-    g_timer_target.handle = 0;
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->timer_target.handle = 0;
+    }
 
     irq_install_handler(LAPIC_TIMER_VECTOR, (void *)isr_lapic_timer);
 
@@ -152,12 +163,16 @@ void lapic_timer_calibrate_and_start(
 
 void lapic_timer_bind(capability_t target)
 {
-    g_timer_target = target;
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->timer_target = target;
+    }
 }
 
 uint64_t lapic_timer_get_ticks(void)
 {
-    return g_ticks;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->timer_ticks : 0;
 }
 
 void lapic_timer_eoi(void)

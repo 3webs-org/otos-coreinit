@@ -18,15 +18,18 @@
 #include "capnp_build.h"
 #include "irq.h"
 #include "serial.h"
+#include "core_state.h"
 #include <stdint.h>
 #include <stddef.h>
 
 /* ARM Generic Timer system registers (accessed via MRS/MSR). */
 #define TIMER_VECTOR 30  /* PPI 14 = GIC INTID 30 (16 + 14) */
 
-static uint64_t g_timer_freq_hz = 0;
-static uint64_t g_ticks = 0;
-static capability_t g_timer_target;
+/* timer_freq_hz/timer_ticks/timer_target now live in struct core_state
+ * -- see that header's own note on why (genuinely per-core on every
+ * architecture). g_kernel_invoke stays a plain global (a constant
+ * function pointer, same precedent as elsewhere); g_normal_isr too
+ * (always &isr_arm_timer, never actually varies). */
 static int (*g_kernel_invoke)(capability_t, uint32_t, const void *, size_t,
                               void *, size_t, size_t *);
 static void *g_normal_isr = NULL;
@@ -78,20 +81,34 @@ static inline void write_cntp_ctl(uint64_t val)
  * dispatcher, which invokes us. */
 static void isr_arm_timer(void)
 {
-    g_ticks++;
-    if (g_timer_target.handle != 0) {
-        uint64_t word = g_ticks;
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        /* No correctly-functioning caller reaches here: timer_core_init
+         * always obtains a core_state before installing this ISR at
+         * all (see below). Re-arming with an unknown frequency would
+         * mean writing a bogus (likely zero) interval -- CNTP_TVAL=0
+         * asserts the interrupt condition immediately and it would
+         * keep reasserting every cycle, a genuine interrupt storm, not
+         * a merely-missed tick. Loud and stuck beats that. */
+        kprintf("[coreinit] PANIC: isr_arm_timer with no core_state\n");
+        for (;;) {
+            __asm__ volatile("wfi");
+        }
+    }
+    cs->timer_ticks++;
+    if (cs->timer_target.handle != 0) {
+        uint64_t word = cs->timer_ticks;
         uint8_t msg[24];
         size_t msg_len = capnp_build_flat(msg, sizeof(msg), &word, 1);
-        g_kernel_invoke(g_timer_target, 0, msg, msg_len, NULL, 0, NULL);
+        g_kernel_invoke(cs->timer_target, 0, msg, msg_len, NULL, 0, NULL);
     }
-    
+
     /* Re-arm the timer for the next tick. TVAL is relative to "now", so
      * writing the same interval again schedules the next interrupt. This
      * approach (TVAL) is simpler than CVAL (absolute compare value) and
      * naturally compensates for interrupt latency -- each tick is relative
      * to when we re-arm, not to a fixed schedule that could drift. */
-    uint32_t interval = (uint32_t)(g_timer_freq_hz / 100);  /* ~100Hz */
+    uint32_t interval = (uint32_t)(cs->timer_freq_hz / 100);  /* ~100Hz */
     write_cntp_tval(interval);
 }
 
@@ -104,23 +121,35 @@ uint64_t timer_core_init(
                            void *, size_t, size_t *))
 {
     (void)calibration_hint;  /* Unused on aarch64 (no BSP/AP split). */
-    
+
+    /* Required, not optional: isr_arm_timer panics without a core_state
+     * to re-arm through (see that function's own comment), so refuse to
+     * ever install it in the first place rather than let that panic be
+     * the first anyone hears of this. */
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        kprintf("[coreinit] PANIC: timer_core_init with no core_state\n");
+        for (;;) {
+            __asm__ volatile("wfi");
+        }
+    }
+
     /* base_or_calibration on aarch64: timer frequency in Hz from topology
      * discovery (arch_opaque[2]), or 0 to read CNTFRQ_EL0 directly. */
     if (base_or_calibration == 0) {
-        g_timer_freq_hz = read_cntfrq();
+        cs->timer_freq_hz = read_cntfrq();
         kprintf("[coreinit]   arm_timer: frequency read from CNTFRQ_EL0: "
-                "%llu Hz\n", (unsigned long long)g_timer_freq_hz);
+                "%llu Hz\n", (unsigned long long)cs->timer_freq_hz);
     } else {
-        g_timer_freq_hz = base_or_calibration;
+        cs->timer_freq_hz = base_or_calibration;
         kprintf("[coreinit]   arm_timer: frequency from topology: %llu Hz\n",
-                (unsigned long long)g_timer_freq_hz);
+                (unsigned long long)cs->timer_freq_hz);
     }
-    
+
     g_kernel_invoke = kernel_invoke_fn;
-    g_timer_target.handle = 0;
-    g_ticks = 0;
-    
+    cs->timer_target.handle = 0;
+    cs->timer_ticks = 0;
+
     /* Install our ISR at the timer vector. The EL1 exception table calls
      * irq_aarch64_dispatch, which invokes this handler. Keep its address
      * so timer_install_isr / timer_restore_normal_isr can swap it out. */
@@ -129,7 +158,7 @@ uint64_t timer_core_init(
     
     /* Program the timer: enable it, unmask interrupts, set the interval.
      * TVAL is relative, so writing it now schedules the first interrupt. */
-    uint32_t interval = (uint32_t)(g_timer_freq_hz / 100);  /* ~100Hz */
+    uint32_t interval = (uint32_t)(cs->timer_freq_hz / 100);  /* ~100Hz */
     write_cntp_tval(interval);
     write_cntp_ctl(0x1);  /* ENABLE=1, IMASK=0 (unmasked) */
     
@@ -141,12 +170,16 @@ uint64_t timer_core_init(
 
 void timer_bind(capability_t target)
 {
-    g_timer_target = target;
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->timer_target = target;
+    }
 }
 
 uint64_t timer_get_ticks(void)
 {
-    return g_ticks;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->timer_ticks : 0;
 }
 
 void timer_eoi(void)
