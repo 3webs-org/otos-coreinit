@@ -170,4 +170,22 @@ struct init_boot_info {
                         * (checked explicitly by kernel_boot, never
                         * assumed) -- callers must treat 0 as "unknown",
                         * not "no RAM". */
+    uint64_t is_bsp; /* 1 for the BSP's own boot_info, 0 for an AP's --
+                      * an explicit signal, not something init infers
+                      * from which other fields happen to be populated.
+                      * Set directly by the kernel at each core's own
+                      * entry, since only it knows which one this is. */
+    uint64_t free_memory_base; /* Start of a pool of genuinely free
+                                * memory init may carve its own
+                                * allocations from (currently: one
+                                * struct core_state per AP -- see
+                                * coreinit/core_state.h). 0/0 means "none
+                                * supplied"; init must treat that as
+                                * "nothing to allocate from", not assume
+                                * some default region. Distinct from
+                                * mem_mgr's own claim-based allocator:
+                                * this is raw, unclaimed memory handed
+                                * down at boot, before mem_mgr exists to
+                                * claim anything. */
+    uint64_t free_memory_len;
 };

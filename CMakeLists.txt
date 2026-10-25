@@ -88,6 +88,8 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
         coreinit/cross_core_signal_x86_64.c
         coreinit/arch_mmu_x86_64.c
         coreinit/arch_cpu_x86_64.c
+        coreinit/core_state.c
+        coreinit/core_state_x86_64.c
         coreinit/job_exec_switch_x86_64.S
     )
     # The AP trampoline is deliberately NOT part of CORE_SOURCES / the final
@@ -142,6 +144,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
         coreinit/cross_core_signal_aarch64.c
         coreinit/smp_aarch64.c
         coreinit/arch_mmu_aarch64.c
+        coreinit/core_state.c
+        coreinit/core_state_aarch64.c
         coreinit/job_exec_switch_aarch64.S
         coreinit/irq_vectors_aarch64.S
     )

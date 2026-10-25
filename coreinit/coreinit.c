@@ -25,6 +25,7 @@
 #include "securinit-generated/generated_schemas.h"
 #include "cluster_scheduler.h"
 #include "arch_mmu.h"
+#include "core_state.h"
 #include "cross_core_signal.h"
 #include "irq.h"
 #include "timer.h"
@@ -1161,6 +1162,30 @@ static void register_job_types(void)
 void coreinit_main(struct init_boot_info *info)
 {
     serial_init();
+
+    /* Scaffolding for the shared-code/per-core-struct redesign (see
+     * TODO.md): this core's own core_state pointer, set once here so
+     * later migrations have somewhere to reach it from a register
+     * instead of a global. Deliberately no behavior change yet -- every
+     * subsystem below still reads its own existing global, and nothing
+     * here skips any step based on info->is_bsp. The BSP's own instance
+     * is static/image-resident (one, known size, no allocation needed);
+     * an AP's is bump-allocated from the free-memory pool info carries
+     * (see core_state.h) and may come back NULL if that pool wasn't
+     * supplied -- non-fatal, since nothing yet depends on it. */
+    if (info->is_bsp) {
+        static struct core_state bsp_core_state;
+        core_state_set(&bsp_core_state);
+    } else {
+        struct core_state *cs = core_state_alloc_ap(info);
+        if (cs != NULL) {
+            core_state_set(cs);
+        } else {
+            kprintf("[coreinit] no free-memory pool for this core's "
+                    "core_state -- continuing without one\n");
+        }
+    }
+
     /* The Mach-O loader may place this instance at an AP-specific address.
      * The generated arrays contain only const indices, while these static
      * descriptor bridges must point to THIS copy's arrays. No heap or
