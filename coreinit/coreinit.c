@@ -1163,17 +1163,25 @@ void coreinit_main(struct init_boot_info *info)
 {
     serial_init();
 
+    /* BSP vs AP: info->bsp_kernel_invoke_addr is 0 only for the BSP's own
+     * boot_info (see that field's own comment in init_abi.h for why this
+     * doubles as the canonical role signal rather than a separate field).
+     * Computed once, up here, so the core_state scaffolding right below
+     * and the shared-services setup further down both read the same
+     * value instead of each deriving their own. */
+    int is_bsp = (info->bsp_kernel_invoke_addr == 0);
+
     /* Scaffolding for the shared-code/per-core-struct redesign (see
      * TODO.md): this core's own core_state pointer, set once here so
      * later migrations have somewhere to reach it from a register
      * instead of a global. Deliberately no behavior change yet -- every
      * subsystem below still reads its own existing global, and nothing
-     * here skips any step based on info->is_bsp. The BSP's own instance
-     * is static/image-resident (one, known size, no allocation needed);
-     * an AP's is bump-allocated from the free-memory pool info carries
-     * (see core_state.h) and may come back NULL if that pool wasn't
-     * supplied -- non-fatal, since nothing yet depends on it. */
-    if (info->is_bsp) {
+     * here skips any step based on is_bsp. The BSP's own instance is
+     * static/image-resident (one, known size, no allocation needed); an
+     * AP's is bump-allocated from the free-memory pool info carries (see
+     * core_state.h) and may come back NULL if that pool wasn't supplied
+     * -- non-fatal, since nothing yet depends on it. */
+    if (is_bsp) {
         static struct core_state bsp_core_state;
         core_state_set(&bsp_core_state);
     } else {
@@ -1235,8 +1243,8 @@ void coreinit_main(struct init_boot_info *info)
      * with the hardware mutex) and before job_smp_bringup runs (it
      * claims regions via the memory manager) -- both jobs, but this
      * part stays plain bootstrap since everything after it depends on
-     * it existing. */
-    int is_bsp = (info->bsp_kernel_invoke_addr == 0);
+     * it existing. is_bsp itself was already computed above, before the
+     * core_state scaffolding. */
 
     /* This core's own pml4_phys -- see kernel.c's build_ap_page_tables
      * for why every core now has an independent one -- needed by

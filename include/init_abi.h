@@ -107,7 +107,19 @@ struct init_boot_info {
      * BSP-hosted object means calling bsp_kernel_invoke_addr directly
      * with the given handle -- a different function pointer than this
      * same struct's own kernel_invoke field, which only ever reaches
-     * THIS core's own capability table. */
+     * THIS core's own capability table.
+     *
+     * THIS FIELD IS ALSO THE CANONICAL BSP/AP ROLE SIGNAL: 0 means this
+     * boot_info is the BSP's own, nonzero means it's an AP's. Nothing in
+     * the kernel needs to tell the two apart (kernel_boot and
+     * kernel_boot_ap are already separate functions), but coreinit_main
+     * is one shared entry point for both, with no other way to know
+     * which one it was handed -- see coreinit/core_state.c's own use of
+     * exactly this check. Deliberately not a separate dedicated field:
+     * this value is already unambiguous (every BSP boot_info genuinely
+     * has no BSP of its own to reach, every AP's genuinely does), so a
+     * second field would just be two ways to say the same thing that
+     * could drift out of sync with each other. */
     uint64_t bsp_kernel_invoke_addr;
     uint64_t mutex_manager_handle;
     uint64_t memory_manager_handle;
@@ -170,11 +182,6 @@ struct init_boot_info {
                         * (checked explicitly by kernel_boot, never
                         * assumed) -- callers must treat 0 as "unknown",
                         * not "no RAM". */
-    uint64_t is_bsp; /* 1 for the BSP's own boot_info, 0 for an AP's --
-                      * an explicit signal, not something init infers
-                      * from which other fields happen to be populated.
-                      * Set directly by the kernel at each core's own
-                      * entry, since only it knows which one this is. */
     uint64_t free_memory_base; /* Start of a pool of genuinely free
                                 * memory init may carve its own
                                 * allocations from (currently: one
