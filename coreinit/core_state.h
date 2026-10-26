@@ -85,6 +85,47 @@ struct core_state {
     uint64_t timer_ticks;
     capability_t timer_target;
     uint64_t timer_freq_hz; /* aarch64 only; unused on x86_64 */
+
+    /* pagefault_x86_64.c/pagefault_aarch64.c's own per-core page-fault
+     * state -- genuinely per-core (each core's own page tables, own
+     * fault history) on both architectures, but the field SHAPE itself
+     * genuinely differs (x86 splits one 2MB region with one table;
+     * aarch64 replaces a 1 GiB block with an L2 table, then splits one
+     * region with an L3 table, and separately tracks handler
+     * readiness since it shares the EL1 vector table with other
+     * exception types) -- same precedent pagefault.h itself already
+     * uses for the two architectures' hook typedefs. The array sizes
+     * below (16, 16, 4) must stay in sync with each file's own
+     * MAX_STREAMED_PAGES/MAX_COW_PAGES/COW_POOL_SIZE -- there's no
+     * shared header constant to enforce that, since pagefault.h
+     * doesn't define one; checked by hand, not by the compiler. */
+#if defined(__x86_64__)
+    uint64_t pf_split_pt[512] __attribute__((aligned(4096)));
+    uint64_t pf_split_region_base;
+    int pf_have_split;
+    uint64_t pf_streamed_pages[16];
+    size_t pf_streamed_count;
+    uint64_t pf_cow_pages[16];
+    size_t pf_cow_count;
+    uint8_t pf_cow_pool[4][4096] __attribute__((aligned(4096)));
+    size_t pf_cow_pool_used;
+    uint64_t pf_fault_count;
+    uint64_t pf_cow_copy_count;
+#elif defined(__aarch64__)
+    uint64_t pf_l2[512] __attribute__((aligned(4096)));
+    uint64_t pf_l3[512] __attribute__((aligned(4096)));
+    uint64_t pf_split_base;
+    int pf_have_split;
+    int pf_handler_ready;
+    uint64_t pf_streamed[16];
+    uint64_t pf_cow[16];
+    size_t pf_streamed_count;
+    size_t pf_cow_count;
+    size_t pf_cow_used;
+    uint8_t pf_cow_pool[4][4096] __attribute__((aligned(4096)));
+    uint64_t pf_fault_count;
+    uint64_t pf_cow_copies;
+#endif
 };
 
 /* Sets every field whose correct "not yet set" value is NOT the

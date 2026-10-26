@@ -1,2 +1,9 @@
-build/
-.saski-pin/
+# Everything build_coreinit.sh produces -- object files and the linked
+# Mach-O. Regenerated from source, so none of it belongs in history.
+/build/
+
+# tools/saski-pin.sh's cache of pinned saski checkouts.
+/.saski-pin/
+
+# Working notes, deliberately not tracked -- see TODO.md's own header.
+/TODO.md

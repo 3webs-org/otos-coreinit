@@ -5,6 +5,7 @@
 #include "pagefault.h"
 #include "arch_mmu.h"
 #include "serial.h"
+#include "core_state.h"
 
 #define PAGE_SIZE 4096ull
 #define REGION_SIZE 0x200000ull
@@ -22,14 +23,12 @@
 #define MAX_COW_PAGES 16
 #define COW_POOL_SIZE 4
 
-static uint64_t g_l2[512] __attribute__((aligned(4096)));
-static uint64_t g_l3[512] __attribute__((aligned(4096)));
-static uint8_t g_cow_pool[COW_POOL_SIZE][4096] __attribute__((aligned(4096)));
-static uint64_t g_split_base;
-static int g_have_split, g_handler_ready;
-static uint64_t g_streamed[MAX_STREAMED_PAGES], g_cow[MAX_COW_PAGES];
-static size_t g_streamed_count, g_cow_count, g_cow_used;
-static uint64_t g_fault_count, g_cow_copies;
+/* g_l2/g_l3/g_split_base/g_have_split/g_handler_ready, the streamed/COW
+ * tracking arrays, and the COW pool now all live in struct core_state
+ * (pf_* fields -- see that header's own note on why the shape itself
+ * differs from x86's). g_el0_hook stays a plain global, same reasoning
+ * as x86_64's g_ring3_hook: only a trusted wrapper installs this, on
+ * the BSP. */
 static pagefault_el0_hook_t g_el0_hook;
 extern char irq_aarch64_vectors[];
 
@@ -44,13 +43,13 @@ static void flush_translations(void)
                      ::: "memory");
 }
 
-static uint64_t *page_entry(uint64_t addr)
+static uint64_t *page_entry(struct core_state *cs, uint64_t addr)
 {
-    if (!g_have_split || addr < g_split_base ||
-        addr >= g_split_base + REGION_SIZE) {
+    if (!cs->pf_have_split || addr < cs->pf_split_base ||
+        addr >= cs->pf_split_base + REGION_SIZE) {
         return NULL;
     }
-    return &g_l3[(addr >> 12) & 511u];
+    return &cs->pf_l3[(addr >> 12) & 511u];
 }
 
 static int contains(const uint64_t *pages, size_t count, uint64_t page)
@@ -71,20 +70,23 @@ int pagefault_supported(void)
 void pagefault_init(uint64_t pml4_phys)
 {
     (void)pml4_phys; /* x86's PML4 is not an ARM TTBR. */
-    if (!pagefault_supported()) {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL || !pagefault_supported()) {
         return;
     }
     __asm__ volatile("msr vbar_el1, %0\n\tisb" ::
                      "r"((uint64_t)(uintptr_t)irq_aarch64_vectors) : "memory");
-    g_handler_ready = 1;
+    cs->pf_handler_ready = 1;
 }
 
 int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
 {
     (void)pml4_phys;
+    struct core_state *cs = core_state_get();
     uint64_t root_phys = arch_mmu_root_phys();
-    if (!g_handler_ready || !root_phys || (region_base & (REGION_SIZE - 1)) ||
-        region_base < RAM_BASE || region_base >= RAM_END || g_have_split) {
+    if (cs == NULL || !cs->pf_handler_ready || !root_phys ||
+        (region_base & (REGION_SIZE - 1)) ||
+        region_base < RAM_BASE || region_base >= RAM_END || cs->pf_have_split) {
         return 0;
     }
     uint64_t *l1 = (uint64_t *)(uintptr_t)root_phys;
@@ -94,19 +96,19 @@ int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
     const uint64_t flags = VALID | NORMAL_MEMORY | INNER_SHAREABLE |
                            ACCESS_FLAG | UXN;
     for (unsigned i = 0; i < 512; i++) {
-        g_l2[i] = (RAM_BASE + (uint64_t)i * REGION_SIZE) | flags;
+        cs->pf_l2[i] = (RAM_BASE + (uint64_t)i * REGION_SIZE) | flags;
     }
     /* Replace the 1 GiB block, preserving every other 2 MiB translation.
      * Install the target's L3 table only after all page descriptors exist. */
-    l1[1] = (uint64_t)(uintptr_t)g_l2 | TABLE_OR_PAGE;
+    l1[1] = (uint64_t)(uintptr_t)cs->pf_l2 | TABLE_OR_PAGE;
     for (unsigned i = 0; i < 512; i++) {
-        g_l3[i] = (region_base + (uint64_t)i * PAGE_SIZE) |
-                  flags | TABLE_OR_PAGE;
+        cs->pf_l3[i] = (region_base + (uint64_t)i * PAGE_SIZE) |
+                      flags | TABLE_OR_PAGE;
     }
-    g_l2[(region_base >> 21) & 511u] =
-        (uint64_t)(uintptr_t)g_l3 | TABLE_OR_PAGE;
-    g_split_base = region_base;
-    g_have_split = 1;
+    cs->pf_l2[(region_base >> 21) & 511u] =
+        (uint64_t)(uintptr_t)cs->pf_l3 | TABLE_OR_PAGE;
+    cs->pf_split_base = region_base;
+    cs->pf_have_split = 1;
     flush_translations();
     kprintf("[coreinit]   pagefault: ARM split 2 MiB region 0x%llX into 4 KiB pages\n",
             (unsigned long long)region_base);
@@ -115,19 +117,27 @@ int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
 
 void pagefault_register_streamed_page(uint64_t page_addr)
 {
-    if (!contains(g_streamed, g_streamed_count, page_addr) &&
-        g_streamed_count < MAX_STREAMED_PAGES) {
-        g_streamed[g_streamed_count++] = page_addr;
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return;
+    }
+    if (!contains(cs->pf_streamed, cs->pf_streamed_count, page_addr) &&
+        cs->pf_streamed_count < MAX_STREAMED_PAGES) {
+        cs->pf_streamed[cs->pf_streamed_count++] = page_addr;
     }
 }
 
 int pagefault_mark_absent(uint64_t pml4_phys, uint64_t page_addr)
 {
     (void)pml4_phys;
-    uint64_t *pte = page_entry(page_addr);
-    if (!g_handler_ready || !pte || !(*pte & VALID) ||
-        (!contains(g_streamed, g_streamed_count, page_addr) &&
-         g_streamed_count == MAX_STREAMED_PAGES)) {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return 0;
+    }
+    uint64_t *pte = page_entry(cs, page_addr);
+    if (!cs->pf_handler_ready || !pte || !(*pte & VALID) ||
+        (!contains(cs->pf_streamed, cs->pf_streamed_count, page_addr) &&
+         cs->pf_streamed_count == MAX_STREAMED_PAGES)) {
         return 0;
     }
     pagefault_register_streamed_page(page_addr);
@@ -139,14 +149,18 @@ int pagefault_mark_absent(uint64_t pml4_phys, uint64_t page_addr)
 int pagefault_mark_cow(uint64_t pml4_phys, uint64_t page_addr)
 {
     (void)pml4_phys;
-    uint64_t *pte = page_entry(page_addr);
-    if (!g_handler_ready || !pte || !(*pte & VALID) ||
-        (!contains(g_cow, g_cow_count, page_addr) &&
-         g_cow_count == MAX_COW_PAGES)) {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
         return 0;
     }
-    if (!contains(g_cow, g_cow_count, page_addr)) {
-        g_cow[g_cow_count++] = page_addr;
+    uint64_t *pte = page_entry(cs, page_addr);
+    if (!cs->pf_handler_ready || !pte || !(*pte & VALID) ||
+        (!contains(cs->pf_cow, cs->pf_cow_count, page_addr) &&
+         cs->pf_cow_count == MAX_COW_PAGES)) {
+        return 0;
+    }
+    if (!contains(cs->pf_cow, cs->pf_cow_count, page_addr)) {
+        cs->pf_cow[cs->pf_cow_count++] = page_addr;
     }
     *pte |= READ_ONLY;
     flush_translations();
@@ -172,27 +186,32 @@ void pagefault_aarch64_handle(uint64_t *frame)
     }
     uint64_t dfsc = esr & 0x3fu;
     uint64_t page = far & ~(PAGE_SIZE - 1);
-    if (g_handler_ready && (ec == 0x25 || ec == 0x24)) {
-        g_fault_count++;
-        uint64_t *pte = page_entry(page);
+    /* No core_state means none of the per-core fault-tracking below can
+     * run at all -- fall straight through to the existing "unhandled"
+     * halt rather than invent a new failure path for it. */
+    struct core_state *cs = core_state_get();
+    if (cs != NULL && cs->pf_handler_ready && (ec == 0x25 || ec == 0x24)) {
+        cs->pf_fault_count++;
+        uint64_t *pte = page_entry(cs, page);
         if (pte && dfsc >= 4 && dfsc <= 7 &&
-            contains(g_streamed, g_streamed_count, page) && !(*pte & VALID)) {
+            contains(cs->pf_streamed, cs->pf_streamed_count, page) &&
+            !(*pte & VALID)) {
             *pte |= VALID;
             flush_translations();
             return;
         }
         if (pte && dfsc >= 12 && dfsc <= 15 && (esr & (1ull << 6)) &&
-            contains(g_cow, g_cow_count, page) && (*pte & READ_ONLY) &&
-            g_cow_used < COW_POOL_SIZE) {
+            contains(cs->pf_cow, cs->pf_cow_count, page) &&
+            (*pte & READ_ONLY) && cs->pf_cow_used < COW_POOL_SIZE) {
             const uint8_t *src = (const uint8_t *)(uintptr_t)(*pte & ADDR_MASK);
-            uint8_t *dst = g_cow_pool[g_cow_used++];
+            uint8_t *dst = cs->pf_cow_pool[cs->pf_cow_used++];
             for (unsigned i = 0; i < 4096; i++) {
                 dst[i] = src[i];
             }
             *pte = (*pte & ~(ADDR_MASK | READ_ONLY)) |
                    ((uint64_t)(uintptr_t)dst & ADDR_MASK);
             flush_translations();
-            g_cow_copies++;
+            cs->pf_cow_copies++;
             return;
         }
     }
@@ -207,17 +226,23 @@ void pagefault_aarch64_handle(uint64_t *frame)
 
 uint64_t pagefault_get_cow_copy_count(void)
 {
-    return g_cow_copies;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->pf_cow_copies : 0;
 }
 
 uint64_t pagefault_get_count(void)
 {
-    return g_fault_count;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->pf_fault_count : 0;
 }
 
 uint64_t pagefault_debug_read_pte(uint64_t pml4_phys, uint64_t addr)
 {
     (void)pml4_phys;
-    uint64_t *pte = page_entry(addr);
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return 0;
+    }
+    uint64_t *pte = page_entry(cs, addr);
     return pte ? *pte : 0;
 }

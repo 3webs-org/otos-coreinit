@@ -1,6 +1,7 @@
 #include "pagefault.h"
 #include "irq.h"
 #include "serial.h"
+#include "core_state.h"
 
 #define MAX_STREAMED_PAGES 16
 #define MAX_COW_PAGES 16
@@ -11,24 +12,20 @@
                                * choice this project makes the way the
                                * LAPIC timer's vector 0x22 was */
 
-/* A fresh page table for one split 2MB region -- static, since this
- * project has no general physical-page allocator yet (see the header's
- * own SCOPE note); one is enough for this demonstration's one region. */
-static uint64_t g_split_pt[512] __attribute__((aligned(4096)));
-static uint64_t g_split_region_base = 0;
-static int g_have_split = 0;
-
-static uint64_t g_streamed_pages[MAX_STREAMED_PAGES];
-static size_t g_streamed_count = 0;
-
-static uint64_t g_cow_pages[MAX_COW_PAGES];
-static size_t g_cow_count = 0;
-
-static uint8_t g_cow_pool[COW_POOL_SIZE][4096] __attribute__((aligned(4096)));
-static size_t g_cow_pool_used = 0;
-
-static uint64_t g_fault_count = 0;
-static uint64_t g_cow_copy_count = 0;
+/* g_split_pt/g_split_region_base/g_have_split, the streamed/COW tracking
+ * arrays, and the COW pool itself all now live in struct core_state --
+ * all genuinely per-core (each core's own page tables and own fault
+ * history), see that header's own note. g_pagefault_pml4_phys is GONE
+ * entirely, not migrated: it was always set to the same value
+ * job_memory.c already records in core_state->my_pml4_phys (confirmed by
+ * tracing the one caller, job_memory_acquire_resource), so isr_page_fault
+ * reads that field directly instead of keeping a second copy that could
+ * drift out of sync with the first.
+ *
+ * g_ring3_hook stays a plain global, deliberately -- irq_x86_64.c's own
+ * comment on ring-3 setup already establishes that only a trusted
+ * wrapper object installs this, on the BSP, same BSP-singleton category
+ * as that file's g_irq_targets. */
 static pagefault_ring3_hook_t g_ring3_hook;
 
 void pagefault_x86_64_set_ring3_hook(pagefault_ring3_hook_t hook)
@@ -80,6 +77,10 @@ static uint64_t *walk_to_pt_entry(uint64_t pml4_phys, uint64_t vaddr)
 
 int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
 {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return 0;
+    }
     uint64_t *pd_entry = walk_to_pd_entry(pml4_phys, region_base);
     if (!pd_entry || !(*pd_entry & PAGE_PRESENT) || !(*pd_entry & PAGE_HUGE)) {
         kprintf("[coreinit]   pagefault: split failed, region 0x%X isn't "
@@ -90,11 +91,11 @@ int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
 
     uint64_t huge_base = *pd_entry & ~0x1FFFFFull; /* 2MB-aligned */
     for (int i = 0; i < 512; i++) {
-        g_split_pt[i] = (huge_base + (uint64_t)i * 4096) | PAGE_PRESENT |
-                       PAGE_WRITABLE;
+        cs->pf_split_pt[i] = (huge_base + (uint64_t)i * 4096) | PAGE_PRESENT |
+                            PAGE_WRITABLE;
     }
 
-    *pd_entry = (uint64_t)(uintptr_t)g_split_pt | PAGE_PRESENT | PAGE_WRITABLE;
+    *pd_entry = (uint64_t)(uintptr_t)cs->pf_split_pt | PAGE_PRESENT | PAGE_WRITABLE;
     /* Invalidate EVERY 4KB address in the region, not just region_base
      * -- a huge-page TLB entry covers the whole 2MB range as a single
      * cached translation, and invlpg on one address within that range
@@ -106,8 +107,8 @@ int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
         invlpg(region_base + off);
     }
 
-    g_split_region_base = huge_base;
-    g_have_split = 1;
+    cs->pf_split_region_base = huge_base;
+    cs->pf_have_split = 1;
     kprintf("[coreinit]   pagefault: split 2MB region 0x%X into a real "
             "4KB-granular mapping, identical access preserved\n",
             (unsigned)huge_base);
@@ -116,25 +117,29 @@ int pagefault_split_region(uint64_t pml4_phys, uint64_t region_base)
 
 void pagefault_register_streamed_page(uint64_t page_addr)
 {
-    if (g_streamed_count < MAX_STREAMED_PAGES) {
-        g_streamed_pages[g_streamed_count++] = page_addr;
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return;
+    }
+    if (cs->pf_streamed_count < MAX_STREAMED_PAGES) {
+        cs->pf_streamed_pages[cs->pf_streamed_count++] = page_addr;
     }
 }
 
-static int is_registered_streamed(uint64_t addr)
+static int is_registered_streamed(struct core_state *cs, uint64_t addr)
 {
-    for (size_t i = 0; i < g_streamed_count; i++) {
-        if (g_streamed_pages[i] == addr) {
+    for (size_t i = 0; i < cs->pf_streamed_count; i++) {
+        if (cs->pf_streamed_pages[i] == addr) {
             return 1;
         }
     }
     return 0;
 }
 
-static int is_registered_cow(uint64_t addr)
+static int is_registered_cow(struct core_state *cs, uint64_t addr)
 {
-    for (size_t i = 0; i < g_cow_count; i++) {
-        if (g_cow_pages[i] == addr) {
+    for (size_t i = 0; i < cs->pf_cow_count; i++) {
+        if (cs->pf_cow_pages[i] == addr) {
             return 1;
         }
     }
@@ -143,6 +148,10 @@ static int is_registered_cow(uint64_t addr)
 
 int pagefault_mark_absent(uint64_t pml4_phys, uint64_t page_addr)
 {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return 0;
+    }
     uint64_t *pt_entry = walk_to_pt_entry(pml4_phys, page_addr);
     if (!pt_entry) {
         kprintf("[coreinit]   pagefault: mark_absent failed, 0x%X is not "
@@ -163,6 +172,10 @@ int pagefault_mark_absent(uint64_t pml4_phys, uint64_t page_addr)
 
 int pagefault_mark_cow(uint64_t pml4_phys, uint64_t page_addr)
 {
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        return 0;
+    }
     uint64_t *pt_entry = walk_to_pt_entry(pml4_phys, page_addr);
     if (!pt_entry || !(*pt_entry & PAGE_PRESENT)) {
         kprintf("[coreinit]   pagefault: mark_cow failed, 0x%X isn't a "
@@ -173,8 +186,8 @@ int pagefault_mark_cow(uint64_t pml4_phys, uint64_t page_addr)
     *pt_entry &= ~PAGE_WRITABLE; /* stays present -- reads are free,
                                   * forever; only a write faults */
     invlpg(page_addr);
-    if (g_cow_count < MAX_COW_PAGES) {
-        g_cow_pages[g_cow_count++] = page_addr;
+    if (cs->pf_cow_count < MAX_COW_PAGES) {
+        cs->pf_cow_pages[cs->pf_cow_count++] = page_addr;
     }
     kprintf("[coreinit]   pagefault: page 0x%X marked copy-on-write -- "
             "reads free, first write will fault and copy\n",
@@ -182,8 +195,10 @@ int pagefault_mark_cow(uint64_t pml4_phys, uint64_t page_addr)
     return 1;
 }
 
-static void resolve_streamed(uint64_t fault_addr, uint64_t pml4_phys)
+static void resolve_streamed(struct core_state *cs, uint64_t fault_addr,
+                             uint64_t pml4_phys)
 {
+    (void)cs;
     /* Single-box model: the data is already physically here (every core
      * shares the same physical memory), so "fetching" it is a no-op --
      * there's only a page table entry missing, not the data itself. A
@@ -197,14 +212,15 @@ static void resolve_streamed(uint64_t fault_addr, uint64_t pml4_phys)
     }
 }
 
-static void resolve_cow_write(uint64_t fault_addr, uint64_t pml4_phys)
+static void resolve_cow_write(struct core_state *cs, uint64_t fault_addr,
+                              uint64_t pml4_phys)
 {
     uint64_t *pt_entry = walk_to_pt_entry(pml4_phys, fault_addr);
     if (!pt_entry) {
         return;
     }
 
-    if (g_cow_pool_used >= COW_POOL_SIZE) {
+    if (cs->pf_cow_pool_used >= COW_POOL_SIZE) {
         kprintf("[coreinit]   pagefault: COW pool exhausted, cannot "
                 "resolve write to 0x%X\n",
                 (unsigned)fault_addr);
@@ -213,7 +229,7 @@ static void resolve_cow_write(uint64_t fault_addr, uint64_t pml4_phys)
 
     const uint8_t *shared_source =
         (const uint8_t *)(uintptr_t)(*pt_entry & PAGE_ADDR_MASK);
-    uint8_t *private_copy = g_cow_pool[g_cow_pool_used++];
+    uint8_t *private_copy = cs->pf_cow_pool[cs->pf_cow_pool_used++];
     for (int i = 0; i < 4096; i++) {
         private_copy[i] = shared_source[i];
     }
@@ -221,14 +237,12 @@ static void resolve_cow_write(uint64_t fault_addr, uint64_t pml4_phys)
     *pt_entry = ((uint64_t)(uintptr_t)private_copy & PAGE_ADDR_MASK) |
                PAGE_PRESENT | PAGE_WRITABLE;
     invlpg(fault_addr);
-    g_cow_copy_count++;
+    cs->pf_cow_copy_count++;
     kprintf("[coreinit]   pagefault: COW copy made for 0x%X -- this "
             "context now has its own private page, the shared original "
             "is untouched\n",
             (unsigned)fault_addr);
 }
-
-static uint64_t g_pagefault_pml4_phys;
 
 __attribute__((interrupt)) static void isr_page_fault(struct interrupt_frame *frame,
                                                        uint64_t error_code)
@@ -246,15 +260,21 @@ __attribute__((interrupt)) static void isr_page_fault(struct interrupt_frame *fr
     int was_present = (error_code & 0x1) != 0;
     int was_write = (error_code & 0x2) != 0;
 
-    g_fault_count++;
+    /* No core_state means none of the per-core fault-tracking below can
+     * run at all -- fall straight through to the existing "unhandled"
+     * halt rather than invent a new failure path for it. */
+    struct core_state *cs = core_state_get();
+    if (cs != NULL) {
+        cs->pf_fault_count++;
 
-    if (!was_present && is_registered_streamed(page_addr)) {
-        resolve_streamed(page_addr, g_pagefault_pml4_phys);
-        return;
-    }
-    if (was_present && was_write && is_registered_cow(page_addr)) {
-        resolve_cow_write(page_addr, g_pagefault_pml4_phys);
-        return;
+        if (!was_present && is_registered_streamed(cs, page_addr)) {
+            resolve_streamed(cs, page_addr, cs->my_pml4_phys);
+            return;
+        }
+        if (was_present && was_write && is_registered_cow(cs, page_addr)) {
+            resolve_cow_write(cs, page_addr, cs->my_pml4_phys);
+            return;
+        }
     }
 
     kprintf("[coreinit] UNHANDLED PAGE FAULT at 0x%X, error_code=0x%X "
@@ -275,7 +295,8 @@ int pagefault_supported(void)
 
 void pagefault_init(uint64_t pml4_phys)
 {
-    g_pagefault_pml4_phys = pml4_phys;
+    (void)pml4_phys; /* see this file's own top note -- isr_page_fault
+                      * reads core_state->my_pml4_phys directly instead */
     irq_install_handler(PAGEFAULT_VECTOR, (void *)isr_page_fault);
 
     /* CR0.WP defaults to clear after reset, meaning supervisor-mode
@@ -298,12 +319,14 @@ void pagefault_init(uint64_t pml4_phys)
 
 uint64_t pagefault_get_count(void)
 {
-    return g_fault_count;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->pf_fault_count : 0;
 }
 
 uint64_t pagefault_get_cow_copy_count(void)
 {
-    return g_cow_copy_count;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->pf_cow_copy_count : 0;
 }
 
 uint64_t pagefault_debug_read_pte(uint64_t pml4_phys, uint64_t addr)
