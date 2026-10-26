@@ -20,6 +20,15 @@ static int same_mac(const uint8_t a[6], const uint8_t b[6])
     for (unsigned i = 0; i < 6; i++) if (a[i] != b[i]) return 0;
     return 1;
 }
+
+static size_t trim_ethernet_padding(const uint8_t *payload, size_t len,
+                                    size_t cproto_len)
+{
+    if (len < cproto_len) return len;
+    for (size_t i = cproto_len; i < len; i++)
+        if (payload[i] != 0) return len;
+    return cproto_len;
+}
 static int frame(const uint8_t dst[6], const void *payload, size_t payload_len)
 {
     if (payload_len > FRAME_CAP - ETH_HEADER) return 0;
@@ -69,6 +78,9 @@ int network_ether_wait_announcement(uint64_t service, uint64_t *out_node,
     for (uint32_t spins = 0; spins < 100000000u; spins++) {
         size_t len = 0;
         if (!poll(source, payload, sizeof(payload), &len)) continue;
+        len = trim_ethernet_padding(
+            payload, len,
+            16u + sizeof(coreinit_network_discovery_announce_request_t));
         const coreinit_network_discovery_announce_request_t *announce =
             coreinit_network_discovery_announce_request_read_exact(payload,
                                                                     len);

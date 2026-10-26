@@ -1428,7 +1428,7 @@ void coreinit_main(struct init_boot_info *info)
         network_device_init((const void *)(uintptr_t)info->fdt_blob_phys,
                             my_node_id)) {
         const uint8_t *mac = network_device_mac();
-        kprintf("[coreinit] virtio-net ready, MAC %X:%X:%X:%X:%X:%X\n",
+        kprintf("[coreinit] network device ready, MAC %X:%X:%X:%X:%X:%X\n",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         g_network_machine_node = mac[5];
         g_network_owner_core = my_node_id;
