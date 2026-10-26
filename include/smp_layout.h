@@ -192,7 +192,7 @@
 
 /* The new boot protocol's own fixed destinations (see
  * include/boot_protocol.h) -- where a loader baking a compile-time
- * MachineDescription/InitDescription/SaskiBootParams (otos-boot, for a
+ * InitDescription/boot-allocator objects (otos-boot, for a
  * known QEMU-virt-aarch64 target) copies them to, the same reasoning
  * mkstub.py's own kernel copy already uses: the EFI stub's OWN load
  * address is firmware's choice, not fixed, so anything that needs to
@@ -203,29 +203,19 @@
  * 0x41880000; CORE_REGION_BASE starts at 0x42000000 -- 7.5 MiB between
  * them, of which this uses 1.0625 MiB).
  *
- * BOOT_PROTO_OBJECTS: generously sized (64 KiB) for the three tiny
- * capnp/plain-struct objects a loader builds -- this is bookkeeping to
- * catch collisions, not a tight fit, same convention mem_mgr.c's own
- * reservations already use.
- *
- * SASKI_AP_POOL: the pool struct saski_boot_params itself points
- * at -- memory reserved FOR SASKI'S OWN use (per-AP stacks, and on
- * x86_64 per-AP page tables), not a pool init may allocate from (see
- * that struct's own comment in boot_protocol.h). 1 MiB here is enough
- * for a handful of APs at a modest per-core stack size; this pass
- * only exercises the BSP path (SMP_CPUS=1), so nothing actually
- * allocates from it yet -- sized for near-term SMP testing, not
- * tightly to today's actual use.
+ * BOOT_ALLOCATOR_REGION: coreinit's boot allocator region. The loader
+ * places InitDescription, the allocator object, and copied
+ * allocator code at its front and initializes used past them; later
+ * allocations continue from there. The 1.0625 MiB extent is deliberately
+ * generous bookkeeping rather than a tight fit.
  *
  * x86_64 equivalents are not yet chosen -- this project's boot-protocol
  * work so far is aarch64-first (see otos-grub/otos-boot's own READMEs),
  * and guessing an x86_64 address here before any x86_64 loader exists
  * to use it would be exactly that, a guess. */
 #if defined(__aarch64__)
-#define BOOT_PROTO_OBJECTS_BASE 0x41880000ull
-#define BOOT_PROTO_OBJECTS_SIZE 0x00010000ull
-#define SASKI_AP_POOL_BASE 0x41890000ull
-#define SASKI_AP_POOL_SIZE 0x00100000ull
+#define BOOT_ALLOCATOR_REGION_BASE 0x41880000ull
+#define BOOT_ALLOCATOR_REGION_SIZE 0x00110000ull
 #endif
 
 /* The allocatable window for the memory manager's own alloc/free

@@ -5,6 +5,11 @@
 typedef int (*remote_invoke_fn_t)(capability_t target, uint32_t method_id,
                                   const void *msg, size_t len, void *response,
                                   size_t response_cap, size_t *out_response_len);
+typedef int (*remote_invoke_ctx_fn_t)(void *ctx, capability_t target,
+                                      uint32_t method_id, const void *msg,
+                                      size_t len, void *response,
+                                      size_t response_cap,
+                                      size_t *out_response_len);
 
 /* The first wrapper built specifically to solve this: a capability
  * handle is only ever meaningful on the node whose kernel_invoke minted
@@ -47,6 +52,15 @@ typedef int (*remote_invoke_fn_t)(capability_t target, uint32_t method_id,
 capability_t create_proxy(capability_t remote_target,
                           remote_invoke_fn_t remote_invoke,
                           const schema_table_t *table, schema_idx_t schema_idx);
+
+/* Context-bearing form used by real transports. This is what lets one proxy
+ * carry a network session/peer route rather than relying on a global remote
+ * function pointer. Existing same-machine proxies keep using create_proxy. */
+capability_t create_routed_proxy(capability_t remote_target,
+                                 remote_invoke_ctx_fn_t remote_invoke,
+                                 void *remote_ctx,
+                                 const schema_table_t *table,
+                                 schema_idx_t schema_idx);
 
 /* Called once, by each node, before create_proxy is used -- needs this
  * node's own LOCAL kernel_invoke, since a proxy is created the same

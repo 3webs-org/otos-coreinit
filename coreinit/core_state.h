@@ -5,6 +5,44 @@
 #include "job_exec.h"
 #include "../include/init_abi.h"
 
+#if defined(__x86_64__)
+#define CORE_IRQ_IDT_ENTRIES 256
+#define CORE_FAULT_IST_STACK_SIZE 8192
+
+typedef struct {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t ist;
+    uint8_t type_attr;
+    uint16_t offset_mid;
+    uint32_t offset_high;
+    uint32_t reserved;
+} __attribute__((packed)) core_irq_idt_entry_t;
+
+typedef struct {
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist1;
+    uint64_t ist2;
+    uint64_t ist3;
+    uint64_t ist4;
+    uint64_t ist5;
+    uint64_t ist6;
+    uint64_t ist7;
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iopb_offset;
+} __attribute__((packed)) core_irq_tss64_t;
+
+_Static_assert(sizeof(core_irq_idt_entry_t) == 16,
+               "x86_64 IDT entries are architecturally 16 bytes");
+_Static_assert(sizeof(core_irq_tss64_t) == 104,
+               "x86_64 64-bit TSS layout must remain 104 bytes");
+#endif
+
 /* Per-core state. The ongoing destination for what used to be a
  * scattered set of globals across job_exec.c, serial_*.c, irq_*.c, the
  * timer backends, job_memory.c, and pagefault_*.c -- all of them
@@ -12,9 +50,8 @@
  * byte-for-byte copy of the whole image, which this project is moving
  * away from (see TODO.md / the boot-protocol redesign notes). Migration
  * happens subsystem by subsystem, each verified independently; not
- * every subsystem listed above has moved yet (irq_*.c and
- * pagefault_*.c's own per-core blocks are still plain globals as of
- * this comment -- see TODO.md for exactly what's left).
+ * every subsystem listed above has moved yet; see TODO.md for the
+ * current audit rather than treating this struct as an exhaustive list.
  *
  * Reached via a dedicated per-core pointer register (TPIDR_EL1 on
  * aarch64, a dedicated MSR on x86_64) rather than threaded through every
@@ -70,6 +107,15 @@ struct core_state {
      * correct -- no explicit reset needed in core_state_init_defaults. */
     capability_t my_node;
 
+    /* scheduler.c's client binding is per core under a shared init image:
+     * the BSP invokes its local cluster-scheduler object, while an AP invokes
+     * a local proxy and has a different node id. These used to be image
+     * globals only because every AP received a private image copy. */
+    int (*scheduler_invoke)(capability_t, uint32_t, const void *, size_t,
+                            void *, size_t, size_t *);
+    capability_t scheduler_cluster;
+    uint64_t scheduler_node_id;
+
     /* job_exec.c's own per-core cooperative scheduler: its job table,
      * the job-stack allocation bitmap, which slot is currently running
      * (-1 means none -- see core_state_init_defaults, same reasoning as
@@ -124,15 +170,22 @@ struct core_state {
      * global (not touched by this migration -- see TODO.md); kept
      * per-core here to match irq_get_tick_count()'s API contract on
      * this architecture even though nothing on aarch64 reads it today.
-     * x86_64 has no equivalent fields in this struct yet -- its own
-     * per-core IRQ state (g_idt/g_tss/g_fault_ist_stack/g_gdt_with_tss
-     * in irq_x86_64.c) is a separate, not-yet-started migration. */
+     * x86_64's corresponding per-core descriptor tables and fault IST
+     * live in the architecture block below. */
 #if defined(__aarch64__)
+    uint64_t mmu_l1[512] __attribute__((aligned(4096)));
+    int mmu_owned_map;
     volatile uint8_t *irq_gicr_base;
     uint64_t irq_tick_count;
 #endif
 
 #if defined(__x86_64__)
+    core_irq_idt_entry_t irq_idt[CORE_IRQ_IDT_ENTRIES];
+    uint8_t irq_fault_ist_stack[CORE_FAULT_IST_STACK_SIZE]
+        __attribute__((aligned(16)));
+    core_irq_tss64_t irq_tss;
+    uint64_t irq_gdt_with_tss[7] __attribute__((aligned(16)));
+
     uint64_t pf_split_pt[512] __attribute__((aligned(4096)));
     uint64_t pf_split_region_base;
     int pf_have_split;
@@ -179,13 +232,11 @@ void core_state_set(struct core_state *cs);
  * core_state_alloc_ap). Callers must check; there is no fallback value. */
 struct core_state *core_state_get(void);
 
-/* Bump-allocates and zero-initializes one struct core_state from the
- * free-memory pool handed to init at boot (info->free_memory_base/len --
- * see init_abi.h's own note on that field). Must be called with the
- * SAME info on every call from a single core's boot sequence (it seeds
- * the pool from info the first time it's invoked; later calls ignore
- * info and just keep bumping). Returns NULL if the pool is absent or
- * exhausted -- non-fatal: nothing yet depends on every core having one of
- * these wired up, so a caller that gets NULL back simply has no per-core
- * state this boot, the same as if this mechanism didn't exist yet. */
+/* Allocates and zero-initializes one struct core_state through the boot
+ * allocator recorded in info->init_description_phys (see
+ * init_abi.h and boot_protocol.h). Returns NULL if the allocator is
+ * absent, malformed, finalized, or exhausted -- non-fatal: nothing yet
+ * depends on every core having one of these wired up, so a caller that
+ * gets NULL back simply has no per-core state this boot, the same as if
+ * this mechanism didn't exist yet. */
 struct core_state *core_state_alloc_ap(const struct init_boot_info *info);

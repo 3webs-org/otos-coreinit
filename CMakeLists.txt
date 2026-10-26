@@ -79,6 +79,7 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
         coreinit/scheduler.c
         coreinit/cluster_scheduler.c
         coreinit/proxy.c
+        coreinit/network_rpc.c
         coreinit/kinv.c
         coreinit/stage_loader.c
         coreinit/pagefault_x86_64.c
@@ -135,6 +136,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
         coreinit/scheduler.c
         coreinit/cluster_scheduler.c
         coreinit/proxy.c
+        coreinit/network_rpc.c
         coreinit/kinv.c
         coreinit/stage_loader.c
         coreinit/job_memory.c

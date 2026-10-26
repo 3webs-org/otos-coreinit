@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cap.h"
+#include "../include/init_abi.h"
 
 /* A capability object that tracks which physical memory regions are
  * claimed, and by what. Method 0 (claim) is the original, MAP_FIXED-
@@ -45,7 +46,7 @@ void memory_manager_handler(void *data, uint32_t method_id, const void *msg,
 /* Resets the claim table and pre-claims the known-reserved regions --
  * the object's own state, not its schema (the schema is const data
  * needing no initialization). */
-void memory_manager_init_schema(void);
+void memory_manager_init_schema(const struct init_boot_info *info);
 
 #define MEM_KIND_MMIO 0
 #define MEM_KIND_KERNEL_RESERVED 1

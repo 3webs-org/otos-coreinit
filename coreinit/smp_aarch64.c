@@ -15,6 +15,9 @@
 #include "scheduler.h"
 #include "serial.h"
 #include "../include/fdt.h"
+#include "../include/boot_protocol.h"
+#include "capnp_build.h"
+#include "core_state.h"
 #include "../include/smp_layout.h"
 
 #include <stddef.h>
@@ -71,6 +74,30 @@ static int claim_region(uint64_t base, uint64_t size, uint64_t kind)
     uint64_t resource_id = 0;
     return scheduler_request_allocation(base, size, kind,
                                         RESOURCE_SYNC_TRANSFER, &resource_id);
+}
+
+#define SHARED_AP_STACK_SIZE (64ull * 1024ull)
+
+static struct boot_allocator *boot_allocator_for(
+    const struct init_boot_info *info)
+{
+    if (!info->init_description_phys) {
+        return NULL;
+    }
+    const struct init_description_data *description =
+        (const struct init_description_data *)(uintptr_t)
+        capnp_read_flat((const void *)(uintptr_t)info->init_description_phys);
+    if (description->magic != INIT_DESCRIPTION_MAGIC ||
+        !description->coreinit_allocator_phys) {
+        return NULL;
+    }
+    struct boot_allocator *allocator = (struct boot_allocator *)(uintptr_t)
+        capnp_read_flat((const void *)(uintptr_t)
+                        description->coreinit_allocator_phys);
+    if (allocator->magic != BOOT_ALLOCATOR_MAGIC || !allocator->alloc) {
+        return NULL;
+    }
+    return allocator;
 }
 
 /* Issues one PSCI call. Arguments travel in registers, not on the stack:
@@ -220,9 +247,19 @@ void smp_bring_up_all(const topology_t *topo,
                       uint64_t hardware_mutex_id, uint32_t lapic_calibration_count,
                       capability_t cluster_scheduler, capability_t serial_resource)
 {
-    if (info->kernel_image_addr == 0) {
-        kprintf("[coreinit]   smp: no kernel image module available, "
+    const int shared_image = info->kernel_image_addr == 0 &&
+                             info->kernel_boot_ap_addr != 0;
+    struct boot_allocator *shared_allocator = NULL;
+    if (shared_image) {
+        shared_allocator = boot_allocator_for(info);
+    } else if (info->kernel_image_addr == 0) {
+        kprintf("[coreinit]   smp: no AP entry or kernel image available, "
                 "cannot bring up additional cores\n");
+        return;
+    }
+    if (shared_image && !shared_allocator) {
+        kprintf("[coreinit]   smp: shared AP entry has no usable boot "
+                "allocator -- cannot construct AP contexts\n");
         return;
     }
 
@@ -286,6 +323,65 @@ void smp_bring_up_all(const topology_t *topo,
     for (size_t i = 0; i < topo->count; i++) {
         uint64_t target = topo->cores[i].target;
         if (!topo->cores[i].enabled || target == my_mpidr) {
+            continue;
+        }
+
+        if (shared_image) {
+            struct init_ap_handoff *handoff =
+                (struct init_ap_handoff *)boot_allocator_alloc(
+                    shared_allocator, sizeof(struct init_ap_handoff),
+                    __alignof__(struct init_ap_handoff));
+            void *stack = boot_allocator_alloc(shared_allocator,
+                                                SHARED_AP_STACK_SIZE, 16);
+            struct core_state *ap_state = core_state_alloc_ap(info);
+            if (!handoff || !stack || !ap_state) {
+                kprintf("[coreinit]   smp: boot allocator exhausted while "
+                        "constructing shared context for mpidr=0x%llX\n",
+                        (unsigned long long)target);
+                continue;
+            }
+
+            handoff->stack_top = (uint64_t)(uintptr_t)stack +
+                                 SHARED_AP_STACK_SIZE;
+            handoff->init_entry = 0; /* filled below from the BSP init entry */
+            handoff->boot_info = *info;
+            handoff->boot_info.kernel_image_addr = 0;
+            handoff->boot_info.kernel_image_len = 0;
+            handoff->boot_info.init_image_addr = 0;
+            handoff->boot_info.init_image_len = 0;
+            handoff->boot_info.bsp_kernel_invoke_addr =
+                (uint64_t)(uintptr_t)info->kernel_invoke;
+            handoff->boot_info.mutex_manager_handle = mutex_manager.handle;
+            handoff->boot_info.memory_manager_handle = memory_manager.handle;
+            handoff->boot_info.hardware_mutex_id = hardware_mutex_id;
+            handoff->boot_info.lapic_calibration_count =
+                lapic_calibration_count;
+            handoff->boot_info.cluster_scheduler_handle =
+                cluster_scheduler.handle;
+            handoff->boot_info.serial_resource_handle = serial_resource.handle;
+            handoff->boot_info.ap_core_state_phys =
+                (uint64_t)(uintptr_t)ap_state;
+
+            handoff->init_entry = info->init_entry_addr;
+
+            scheduler_submit_to_node(target, JOB_TYPE_GREET_FROM_BSP,
+                                     my_mpidr, 95, 0,
+                                     RESOURCE_KIND_NONE, 0);
+            clean_to_poc((uint64_t)(uintptr_t)handoff, sizeof(*handoff));
+            clean_to_poc((uint64_t)(uintptr_t)ap_state, sizeof(*ap_state));
+            __asm__ volatile("dsb sy\n\tisb" ::: "memory");
+            uint64_t ret = psci_call(cpu_on_fid, target,
+                                     info->kernel_boot_ap_addr,
+                                     (uint64_t)(uintptr_t)handoff, use_hvc);
+            if (ret == PSCI_SUCCESS) {
+                kprintf("[coreinit]   smp: mpidr=0x%llX entered shared "
+                        "kernel/init images\n", (unsigned long long)target);
+            } else {
+                kprintf("[coreinit]   smp: shared CPU_ON for mpidr=0x%llX "
+                        "was rejected, return code 0x%llX\n",
+                        (unsigned long long)target,
+                        (unsigned long long)ret);
+            }
             continue;
         }
 

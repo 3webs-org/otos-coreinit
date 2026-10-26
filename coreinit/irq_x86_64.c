@@ -3,26 +3,14 @@
 #include "capnp_build.h"
 #include "schema.h"
 #include "serial.h"
+#include "core_state.h"
 
-#define IDT_ENTRIES 256
 #define KERNEL_CODE_SELECTOR 0x08 /* boot.S's gdt64_code -- see kernel/boot.S */
-
-typedef struct {
-    uint16_t offset_low;
-    uint16_t selector;
-    uint8_t ist;
-    uint8_t type_attr;
-    uint16_t offset_mid;
-    uint32_t offset_high;
-    uint32_t reserved;
-} __attribute__((packed)) idt_entry_t;
 
 typedef struct {
     uint16_t limit;
     uint64_t base;
 } __attribute__((packed)) idt_ptr_t;
-
-static idt_entry_t g_idt[IDT_ENTRIES];
 
 /* IRQ line -> capability to invoke (method 0, message = IRQ number) on
  * every fire. handle 0 doubles as "unbound", same
@@ -50,14 +38,15 @@ static void idt_set_gate(int vector, void *handler, uint8_t selector,
 static void idt_set_gate_ist(int vector, void *handler, uint8_t selector,
                              uint8_t type_attr, uint8_t ist)
 {
+    struct core_state *cs = core_state_get();
     uint64_t addr = (uint64_t)(uintptr_t)handler;
-    g_idt[vector].offset_low = (uint16_t)(addr & 0xFFFFu);
-    g_idt[vector].selector = selector;
-    g_idt[vector].ist = ist;
-    g_idt[vector].type_attr = type_attr;
-    g_idt[vector].offset_mid = (uint16_t)((addr >> 16) & 0xFFFFu);
-    g_idt[vector].offset_high = (uint32_t)((addr >> 32) & 0xFFFFFFFFu);
-    g_idt[vector].reserved = 0;
+    cs->irq_idt[vector].offset_low = (uint16_t)(addr & 0xFFFFu);
+    cs->irq_idt[vector].selector = selector;
+    cs->irq_idt[vector].ist = ist;
+    cs->irq_idt[vector].type_attr = type_attr;
+    cs->irq_idt[vector].offset_mid = (uint16_t)((addr >> 16) & 0xFFFFu);
+    cs->irq_idt[vector].offset_high = (uint32_t)((addr >> 32) & 0xFFFFFFFFu);
+    cs->irq_idt[vector].reserved = 0;
 }
 
 static inline void load_idt(uint16_t limit, uint64_t base)
@@ -160,28 +149,6 @@ static uint64_t g_tick_count = 0;
  * with an already-wrecked RSP can still run a real handler and report
  * the actual faulting state, rather than compounding into a silent
  * reset. */
-typedef struct {
-    uint32_t reserved0;
-    uint64_t rsp0;
-    uint64_t rsp1;
-    uint64_t rsp2;
-    uint64_t reserved1;
-    uint64_t ist1;
-    uint64_t ist2;
-    uint64_t ist3;
-    uint64_t ist4;
-    uint64_t ist5;
-    uint64_t ist6;
-    uint64_t ist7;
-    uint64_t reserved2;
-    uint16_t reserved3;
-    uint16_t iopb_offset;
-} __attribute__((packed)) tss64_t;
-
-#define FAULT_IST_STACK_SIZE 8192
-static uint8_t g_fault_ist_stack[FAULT_IST_STACK_SIZE] __attribute__((aligned(16)));
-static tss64_t g_tss;
-
 /* A fresh GDT with room for a TSS descriptor -- whatever GDT was
  * already active (boot.S's, for the BSP) has no slack for one, so this
  * builds a full replacement rather than trying to extend it in place.
@@ -189,8 +156,6 @@ static tss64_t g_tss;
  * boot.S's own gdt64 already uses, so every existing selector constant
  * in this codebase stays valid without any other change; a new TSS
  * selector is added at 0x18. */
-static uint64_t g_gdt_with_tss[7] __attribute__((aligned(16)));
-
 __attribute__((interrupt)) static void isr_double_fault(
     struct interrupt_frame *frame, uint64_t error_code)
 {
@@ -218,31 +183,33 @@ __attribute__((interrupt)) static void isr_general_protection(
 
 static void setup_tss_and_ist(void)
 {
-    for (size_t i = 0; i < FAULT_IST_STACK_SIZE; i++) {
-        g_fault_ist_stack[i] = 0;
+    struct core_state *cs = core_state_get();
+    for (size_t i = 0; i < CORE_FAULT_IST_STACK_SIZE; i++) {
+        cs->irq_fault_ist_stack[i] = 0;
     }
     uint64_t ist_top =
-        (uint64_t)(uintptr_t)g_fault_ist_stack + FAULT_IST_STACK_SIZE;
+        (uint64_t)(uintptr_t)cs->irq_fault_ist_stack +
+        CORE_FAULT_IST_STACK_SIZE;
     ist_top &= ~0xFull; /* defensive -- the buffer's own alignment and
                          * size already guarantee this, but the CPU
                          * requires a 16-byte-aligned stack at interrupt
                          * entry and this is cheap insurance */
 
-    for (size_t i = 0; i < sizeof(g_tss); i++) {
-        ((uint8_t *)&g_tss)[i] = 0;
+    for (size_t i = 0; i < sizeof(cs->irq_tss); i++) {
+        ((uint8_t *)&cs->irq_tss)[i] = 0;
     }
-    g_tss.ist1 = ist_top;
-    g_tss.iopb_offset = sizeof(tss64_t); /* no I/O bitmap -- point past
+    cs->irq_tss.ist1 = ist_top;
+    cs->irq_tss.iopb_offset = sizeof(core_irq_tss64_t); /* no I/O bitmap -- point past
                                           * the TSS itself, which is the
                                           * documented way to say "none" */
 
-    g_gdt_with_tss[0] = 0;
-    g_gdt_with_tss[1] = 0x00AF9A000000FFFFull; /* 64-bit code, same as
+    cs->irq_gdt_with_tss[0] = 0;
+    cs->irq_gdt_with_tss[1] = 0x00AF9A000000FFFFull; /* 64-bit code, same as
                                                 * boot.S's gdt64 */
-    g_gdt_with_tss[2] = 0x00AF92000000FFFFull; /* 64-bit data, likewise */
+    cs->irq_gdt_with_tss[2] = 0x00AF92000000FFFFull; /* 64-bit data, likewise */
 
-    uint64_t tss_base = (uint64_t)(uintptr_t)&g_tss;
-    uint32_t tss_limit = (uint32_t)sizeof(tss64_t) - 1;
+    uint64_t tss_base = (uint64_t)(uintptr_t)&cs->irq_tss;
+    uint32_t tss_limit = (uint32_t)sizeof(core_irq_tss64_t) - 1;
     uint64_t desc_low = (uint64_t)(tss_limit & 0xFFFFu) |
                         ((tss_base & 0xFFFFFFull) << 16) |
                         (0x89ull << 40) | /* present, DPL0, type=available
@@ -250,17 +217,17 @@ static void setup_tss_and_ist(void)
                         (((uint64_t)(tss_limit >> 16) & 0xFull) << 48) |
                         (((tss_base >> 24) & 0xFFull) << 56);
     uint64_t desc_high = (tss_base >> 32) & 0xFFFFFFFFull;
-    g_gdt_with_tss[3] = desc_low;
-    g_gdt_with_tss[4] = desc_high;
+    cs->irq_gdt_with_tss[3] = desc_low;
+    cs->irq_gdt_with_tss[4] = desc_high;
     /* Ring-3 selectors exist on every core, but only a trusted wrapper
      * object can install its own entry gate and TSS.rsp0 on the BSP. */
-    g_gdt_with_tss[5] = 0x00AFF2000000FFFFull; /* user data: 0x2B */
-    g_gdt_with_tss[6] = 0x00AFFA000000FFFFull; /* user code: 0x33 */
+    cs->irq_gdt_with_tss[5] = 0x00AFF2000000FFFFull; /* user data: 0x2B */
+    cs->irq_gdt_with_tss[6] = 0x00AFFA000000FFFFull; /* user code: 0x33 */
 
     idt_ptr_t gdt_ptr; /* same {limit, base} shape as idt_ptr_t -- reused
                         * rather than declaring an identical struct */
-    gdt_ptr.limit = (uint16_t)(sizeof(g_gdt_with_tss) - 1);
-    gdt_ptr.base = (uint64_t)(uintptr_t)g_gdt_with_tss;
+    gdt_ptr.limit = (uint16_t)(sizeof(cs->irq_gdt_with_tss) - 1);
+    gdt_ptr.base = (uint64_t)(uintptr_t)cs->irq_gdt_with_tss;
     __asm__ volatile("lgdt %0" : : "m"(gdt_ptr));
 
     /* lgdt alone doesn't change CS -- that needs a far jump/ret, which
@@ -290,7 +257,7 @@ static void setup_tss_and_ist(void)
     kprintf("[coreinit]   irq: TSS loaded, IST1 (0x%X bytes) reserved for "
            "#DF/#GP -- a double fault can no longer silently "
            "triple-fault without reporting its own state first\n",
-           (unsigned)FAULT_IST_STACK_SIZE);
+           (unsigned)CORE_FAULT_IST_STACK_SIZE);
 }
 
 static void dispatch_irq(uint8_t irq)
@@ -326,10 +293,11 @@ __attribute__((interrupt)) static void isr_irq1(struct interrupt_frame *frame)
 
 static void irq_setup_idt_only(void)
 {
-    for (int i = 0; i < IDT_ENTRIES; i++) {
+    struct core_state *cs = core_state_get();
+    for (int i = 0; i < CORE_IRQ_IDT_ENTRIES; i++) {
         idt_set_gate(i, 0, 0, 0);
     }
-    load_idt(sizeof(g_idt) - 1, (uint64_t)(uintptr_t)g_idt);
+    load_idt(sizeof(cs->irq_idt) - 1, (uint64_t)(uintptr_t)cs->irq_idt);
     setup_tss_and_ist();
     kprintf("[coreinit]   irq: IDT loaded (no legacy PIC/PIT touched -- "
             "this core doesn't need it, see lapic_timer)\n");
@@ -344,13 +312,14 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
         g_irq_targets[i].handle = 0;
     }
 
-    for (int i = 0; i < IDT_ENTRIES; i++) {
+    struct core_state *cs = core_state_get();
+    for (int i = 0; i < CORE_IRQ_IDT_ENTRIES; i++) {
         idt_set_gate(i, 0, 0, 0);
     }
     idt_set_gate(0x20, (void *)isr_irq0, KERNEL_CODE_SELECTOR, 0x8E);
     idt_set_gate(0x21, (void *)isr_irq1, KERNEL_CODE_SELECTOR, 0x8E);
 
-    load_idt(sizeof(g_idt) - 1, (uint64_t)(uintptr_t)g_idt);
+    load_idt(sizeof(cs->irq_idt) - 1, (uint64_t)(uintptr_t)cs->irq_idt);
     setup_tss_and_ist();
 
     pic_remap();
@@ -426,7 +395,8 @@ int irq_x86_64_install_wrapper(void *invoke_handler, void *exit_handler,
     /* The trusted wrapper owns both entry stubs and its ring-0 return
      * stack. This hardware backend only exposes vector 0x80 to CPL3 and
      * an INT3 exit route, preserving IRQ0/IRQ1 and #PF gates unchanged. */
-    g_tss.rsp0 = ring0_stack_top;
+    struct core_state *cs = core_state_get();
+    cs->irq_tss.rsp0 = ring0_stack_top;
     idt_set_gate(0x80, invoke_handler, KERNEL_CODE_SELECTOR, 0xEE);
     idt_set_gate(3, exit_handler, KERNEL_CODE_SELECTOR, 0xEE);
     __asm__ volatile("mfence" ::: "memory");

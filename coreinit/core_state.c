@@ -1,34 +1,42 @@
-/* Arch-neutral half of core_state.h: the AP bump allocator. Pure
- * bookkeeping over a flat range of bytes handed down at boot -- nothing
- * here needs an architecture backend. core_state_set/core_state_get (the
- * per-core pointer register itself) are the arch-specific half, in
+/* Arch-neutral half of core_state.h: allocation of an AP's core_state
+ * through the boot allocator supplied to coreinit. Nothing here needs
+ * an architecture backend. core_state_set/core_state_get (the per-core
+ * pointer register itself) are the arch-specific half, in
  * core_state_x86_64.c / core_state_aarch64.c. */
 #include "core_state.h"
+#include "boot_protocol.h"
+#include "capnp_build.h"
 #include <stddef.h>
-
-/* Seeded from info on the first call, then just bumped. This core's own
- * bring-up loop calls this sequentially (never concurrently -- the BSP
- * brings up one AP at a time), so a plain pair of globals is sufficient;
- * no lock. */
-static uint64_t g_pool_next = 0;
-static uint64_t g_pool_end = 0;
-static int g_pool_seeded = 0;
 
 struct core_state *core_state_alloc_ap(const struct init_boot_info *info)
 {
-    if (!g_pool_seeded) {
-        g_pool_seeded = 1;
-        g_pool_next = info->free_memory_base;
-        g_pool_end = info->free_memory_base + info->free_memory_len;
+    if (info && info->ap_core_state_phys) {
+        return (struct core_state *)(uintptr_t)info->ap_core_state_phys;
     }
-
-    if (g_pool_next == 0 ||
-        sizeof(struct core_state) > g_pool_end - g_pool_next) {
+    if (!info || !info->init_description_phys) {
         return NULL;
     }
 
-    struct core_state *cs = (struct core_state *)(uintptr_t)g_pool_next;
-    g_pool_next += sizeof(struct core_state);
+    const struct init_description_data *description =
+        (const struct init_description_data *)(uintptr_t)
+        capnp_read_flat((const void *)(uintptr_t)info->init_description_phys);
+    if (description->magic != INIT_DESCRIPTION_MAGIC ||
+        !description->coreinit_allocator_phys) {
+        return NULL;
+    }
+
+    struct boot_allocator *allocator = (struct boot_allocator *)(uintptr_t)
+        capnp_read_flat((const void *)(uintptr_t)
+                        description->coreinit_allocator_phys);
+    if (allocator->magic != BOOT_ALLOCATOR_MAGIC || !allocator->alloc) {
+        return NULL;
+    }
+
+    struct core_state *cs = (struct core_state *)boot_allocator_alloc(
+        allocator, sizeof(struct core_state), __alignof__(struct core_state));
+    if (!cs) {
+        return NULL;
+    }
 
     uint8_t *bytes = (uint8_t *)cs;
     for (size_t i = 0; i < sizeof(struct core_state); i++) {

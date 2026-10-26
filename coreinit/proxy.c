@@ -8,6 +8,8 @@
 typedef struct {
     capability_t remote_target;
     remote_invoke_fn_t remote_invoke;
+    remote_invoke_ctx_fn_t remote_invoke_ctx;
+    void *remote_ctx;
     /* This proxy's own capability record storage -- CREATE now requires
      * the caller to supply it (see cap.h); a proxy slot is already a
      * stable, long-lived allocation, so embedding it here needs no
@@ -37,13 +39,21 @@ static void proxy_handler(void *data, uint32_t method_id, const void *msg,
                           size_t *out_response_len)
 {
     proxy_data_t *p = (proxy_data_t *)data;
-    p->remote_invoke(p->remote_target, method_id, msg, len, response,
-                     response_cap, out_response_len);
+    if (p->remote_invoke_ctx) {
+        p->remote_invoke_ctx(p->remote_ctx, p->remote_target, method_id, msg,
+                             len, response, response_cap, out_response_len);
+    } else {
+        p->remote_invoke(p->remote_target, method_id, msg, len, response,
+                         response_cap, out_response_len);
+    }
 }
 
-capability_t create_proxy(capability_t remote_target,
-                          remote_invoke_fn_t remote_invoke,
-                          const schema_table_t *table, schema_idx_t schema_idx)
+static capability_t create_proxy_common(capability_t remote_target,
+                                        remote_invoke_fn_t remote_invoke,
+                                        remote_invoke_ctx_fn_t remote_ctx_fn,
+                                        void *remote_ctx,
+                                        const schema_table_t *table,
+                                        schema_idx_t schema_idx)
 {
     capability_t none = {0};
 
@@ -61,6 +71,8 @@ capability_t create_proxy(capability_t remote_target,
     slot->used = 1;
     slot->remote_target = remote_target;
     slot->remote_invoke = remote_invoke;
+    slot->remote_invoke_ctx = remote_ctx_fn;
+    slot->remote_ctx = remote_ctx;
 
     uint64_t words[5] = {(uint64_t)(uintptr_t)proxy_handler,
                          (uint64_t)(uintptr_t)slot,
@@ -85,4 +97,22 @@ capability_t create_proxy(capability_t remote_target,
             "handle %u\n",
             (unsigned)result.handle, (unsigned)remote_target.handle);
     return result;
+}
+
+capability_t create_proxy(capability_t remote_target,
+                          remote_invoke_fn_t remote_invoke,
+                          const schema_table_t *table, schema_idx_t schema_idx)
+{
+    return create_proxy_common(remote_target, remote_invoke, NULL, NULL,
+                               table, schema_idx);
+}
+
+capability_t create_routed_proxy(capability_t remote_target,
+                                 remote_invoke_ctx_fn_t remote_invoke,
+                                 void *remote_ctx,
+                                 const schema_table_t *table,
+                                 schema_idx_t schema_idx)
+{
+    return create_proxy_common(remote_target, NULL, remote_invoke, remote_ctx,
+                               table, schema_idx);
 }

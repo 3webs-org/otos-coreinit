@@ -1,4 +1,4 @@
-/* Per-core ARMv8 STREAM/COW faults. Each init image owns its own TTBR0
+/* Per-core ARMv8 STREAM/COW faults. Each core_state owns its own TTBR0
  * root and these two 4 KiB tables: one L2 table replaces the 1 GiB RAM
  * block, then one L3 table splits a single 2 MiB region into pages.
  * All other identity mappings are left alone. */

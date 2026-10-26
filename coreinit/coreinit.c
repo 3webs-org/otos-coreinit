@@ -498,7 +498,7 @@ static void hw_mutex_lock(void)
          * safe (the caller proceeds believing it holds exclusive
          * access to shared PIC/PIT hardware when it does not). This
          * can only happen on an AP before a real bootloader supplies
-         * the free-memory pool core_state_alloc_ap needs -- loud and
+         * the InitDescription allocator core_state_alloc_ap needs -- loud and
          * stuck is better than silently racing real hardware. */
         kprintf("[coreinit] PANIC: hw_mutex_lock with no core_state\n");
         for (;;) {
@@ -1229,8 +1229,8 @@ void coreinit_main(struct init_boot_info *info)
      * subsystem below still reads its own existing global, and nothing
      * here skips any step based on is_bsp. The BSP's own instance is
      * static/image-resident (one, known size, no allocation needed); an
-     * AP's is bump-allocated from the free-memory pool info carries (see
-     * core_state.h) and may come back NULL if that pool wasn't supplied
+     * AP's is allocated through the allocator in InitDescription (see
+     * core_state.h) and may come back NULL if it wasn't supplied
      * -- non-fatal, since nothing yet depends on it. */
     if (is_bsp) {
         static struct core_state bsp_core_state;
@@ -1242,7 +1242,7 @@ void coreinit_main(struct init_boot_info *info)
             core_state_init_defaults(cs);
             core_state_set(cs);
         } else {
-            kprintf("[coreinit] no free-memory pool for this core's "
+            kprintf("[coreinit] no boot allocator for this core's "
                     "core_state -- continuing without one\n");
         }
     }
@@ -1314,7 +1314,7 @@ void coreinit_main(struct init_boot_info *info)
         mutex_manager = create_object(mutex_manager_handler, NULL,
                                       &g_mutex_manager_table,
                                       MUTEX_MGR_SCHEMA_MUTEX_MANAGER);
-        memory_manager_init_schema();
+        memory_manager_init_schema(info);
         memory_manager = create_object(memory_manager_handler, NULL,
                                        &g_memory_manager_table,
                                        MEM_MGR_SCHEMA_MEMORY_MANAGER);
@@ -1452,7 +1452,10 @@ void coreinit_main(struct init_boot_info *info)
     /* Always the LOCAL kernel_invoke now -- cluster_scheduler is either
      * genuinely local (BSP) or a local proxy (AP), so there's no more
      * "which invoke function" special-casing needed here at all. */
-    scheduler_client_init(g_kernel_invoke, cluster_scheduler, (uint8_t)my_node_id);
+    /* Keep the full id. APIC/MPIDR values already need more than eight bits
+     * on real machines, and network admission will compose a machine id with
+     * a local core id; truncating here would alias distinct cluster nodes. */
+    scheduler_client_init(g_kernel_invoke, cluster_scheduler, my_node_id);
 
     /* The architecture code this node joins as -- resolved per-arch, like
      * everything else in topology. */

@@ -57,13 +57,9 @@ struct init_boot_info {
     initial_capabilities_t caps; /* .factory is the one thing init
                                   * cannot discover any other way -- see
                                   * this struct's own top comment. */
-    /* The three fields below exist purely to make AP bring-up possible:
-     * they let init (running on the BSP) construct a fresh, correct
-     * copy of the kernel for another core without needing to parse the
-     * kernel's own ELF symbol table to find kernel_boot_ap's address --
-     * the BSP's own kernel_boot already knows it (same binary, ordinary
-     * C reference), so it's simplest to just hand it over the same way
-     * kernel_invoke itself is. */
+    /* AP bring-up metadata. Legacy paths use the load base and AP address to
+     * construct a relocated copy; the transparent path leaves image spans
+     * zero and publishes a directly callable shared-image AP entry. */
     int (*kernel_invoke)(capability_t target, uint32_t method_id,
                          const void *msg, size_t len, void *response,
                          size_t response_cap, size_t *out_response_len);
@@ -71,7 +67,7 @@ struct init_boot_info {
                                   * copy of the kernel is linked to load,
                                   * needed to compute the delta when
                                   * copying it elsewhere for another core */
-    uint64_t kernel_boot_ap_addr; /* kernel_boot_ap's address in THIS copy */
+    uint64_t kernel_boot_ap_addr; /* copied-image or shared-image AP entry */
     uint64_t pml4_phys;           /* boot.S's identity-map root, reused
                                    * as-is for every core (see kernel.c's
                                    * own note on why this is sound for now) */
@@ -177,44 +173,44 @@ struct init_boot_info {
                         * (checked explicitly by kernel_boot, never
                         * assumed) -- callers must treat 0 as "unknown",
                         * not "no RAM". */
-    uint64_t free_memory_base; /* Start of a pool of genuinely free
-                                * memory init may carve its own
-                                * allocations from (currently: one
-                                * struct core_state per AP -- see
-                                * coreinit/core_state.h). 0/0 means "none
-                                * supplied"; init must treat that as
-                                * "nothing to allocate from", not assume
-                                * some default region. Distinct from
-                                * mem_mgr's own claim-based allocator:
-                                * this is raw, unclaimed memory handed
-                                * down at boot, before mem_mgr exists to
-                                * claim anything. */
-    uint64_t free_memory_len;
-
     /* The new boot-protocol handoff (see include/boot_protocol.h) --
      * populated only by a loader implementing that protocol
      * (otos-grub, otos-boot), zero/absent on every boot path that
      * still exists in this repo today (GRUB's xnu loader, mkstub.py).
-     * machine_description_phys/init_description_phys are forwarded
-     * here unread -- saski copies the register values
-     * (aarch64 x1/x2, x86_64 rdi/rsi) straight into these two fields
-     * and never looks inside either object; only coreinit decodes
-     * them (coreinit/boot_protocol_decode.h). Once a real loader
-     * exists, free_memory_base/free_memory_len above should be sourced
-     * from MachineDescription's own freeMemoryBase/freeMemoryLen
-     * fields instead of wherever they come from today -- not changed
-     * in this pass, which only adds the new fields, not the wiring. */
-    uint64_t machine_description_phys;
+     *
+     * init_description_phys is forwarded here unread -- saski copies
+     * the register value (aarch64 x2, x86_64 rdx) straight into this
+     * field. Hardware description remains the firmware's raw FDT/ACPI
+     * input in fdt_blob_phys/early_rsdp_phys; coreinit parses it.
+     *
+     * InitDescription itself contains the physical address of the flat
+     * Cap'n Proto boot_allocator object (boot_protocol.h) used by init
+     * (currently: one struct core_state per AP, see core_state.h).
+     * Saski therefore never needs to inspect or separately forward the
+     * allocator. The caller supplies saski's
+     * stack and active address space; when coreinit starts an AP it is
+     * likewise responsible for that AP's stack and page tables, so no
+     * saski-owned allocator is part of this handoff. 0 means "none
+     * supplied"; init must treat that as "nothing to allocate from",
+     * not assume some default region. */
     uint64_t init_description_phys;
-    /* saski_pool_base/saski_pool_len: memory the loader set aside FOR
-     * SASKI'S OWN use (see struct saski_boot_params's own comment in
-     * boot_protocol.h for exactly what saski allocates from it --
-     * per-AP stacks, and on x86_64 per-AP page tables). Reported here
-     * purely so init's own memory manager marks this range reserved;
-     * init must never allocate from it -- that is what
-     * free_memory_base/free_memory_len above are for. 0/0 means "none
-     * supplied", the same convention every other optional field in
-     * this struct already uses. */
-    uint64_t saski_pool_base;
-    uint64_t saski_pool_len;
+    /* Resolved shared init entry. Present on the new loader protocol so a
+     * BSP can start APs in the same init image without parsing or copying
+     * that image; zero on legacy per-core-image boots. */
+    uint64_t init_entry_addr;
+    /* Optional preallocated per-core state for a shared-image AP. The BSP
+     * fills this before CPU_ON so AP startup never races another core in the
+     * deliberately tiny, non-atomic boot bump allocator. Zero keeps the
+     * legacy behavior: init allocates its own state from InitDescription. */
+    uint64_t ap_core_state_phys;
+};
+
+/* PSCI's context_id for the transparent/shared-image aarch64 AP path.
+ * Firmware enters kernel_boot_ap_shared with x0 pointing here; its first
+ * action is to adopt stack_top, then the C half completes boot_info and calls
+ * init_entry. The object and stack are owned by init/coreinit, not saski. */
+struct init_ap_handoff {
+    uint64_t stack_top;
+    uint64_t init_entry;
+    struct init_boot_info boot_info;
 };

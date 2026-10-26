@@ -5,9 +5,12 @@
  * The running kernel, init, AP regions, mailbox, EFI tables, PL011 and GIC
  * retain identical virtual and physical addresses across the switch.
  *
- * No shared page-table root: this BSS is re-created in each Mach-O copy.
- * The sparse two-block map leaves everything above 2 GiB inaccessible. */
+ * The root lives in struct core_state. That is required when APs execute the
+ * same Mach-O image: an image-global root lets one AP erase or replace the
+ * BSP's live translations. The sparse two-block map leaves everything above
+ * 2 GiB inaccessible. */
 #include "arch_mmu.h"
+#include "core_state.h"
 #include <stdint.h>
 
 #define ARM_RAM_BASE 0x40000000ull
@@ -18,9 +21,6 @@
 #define DESC_NORMAL (1ull << 2)
 #define DESC_INNER_SHAREABLE (3ull << 8)
 
-static uint64_t g_l1[512] __attribute__((aligned(4096)));
-static int g_owned_map;
-
 int arch_has_mmu(void)
 {
     uint64_t sctlr;
@@ -30,7 +30,8 @@ int arch_has_mmu(void)
 
 uint64_t arch_mmu_root_phys(void)
 {
-    return g_owned_map ? (uint64_t)(uintptr_t)g_l1 : 0;
+    struct core_state *cs = core_state_get();
+    return cs && cs->mmu_owned_map ? (uint64_t)(uintptr_t)cs->mmu_l1 : 0;
 }
 
 int arch_mmu_enable_identity_map(void)
@@ -40,17 +41,21 @@ int arch_mmu_enable_identity_map(void)
     if (current_el != (1ull << 2)) {
         return 0; /* EL1 owns TTBR0_EL1; never write it from another EL. */
     }
+    struct core_state *cs = core_state_get();
+    if (!cs) {
+        return 0;
+    }
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     if (sctlr & 1ull) {
         return 1; /* Preserve an already-active platform map. */
     }
 
     for (unsigned i = 0; i < 512; i++) {
-        g_l1[i] = 0;
+        cs->mmu_l1[i] = 0;
     }
-    g_l1[0] = DESC_BLOCK | DESC_AF | DESC_UXN | DESC_PXN;
-    g_l1[1] = ARM_RAM_BASE | DESC_BLOCK | DESC_AF | DESC_NORMAL |
-              DESC_INNER_SHAREABLE | DESC_UXN;
+    cs->mmu_l1[0] = DESC_BLOCK | DESC_AF | DESC_UXN | DESC_PXN;
+    cs->mmu_l1[1] = ARM_RAM_BASE | DESC_BLOCK | DESC_AF | DESC_NORMAL |
+                    DESC_INNER_SHAREABLE | DESC_UXN;
 
     /* MAIR index 0 = Device-nGnRE (0x04), index 1 = Normal WBWA (0xff).
      * 39-bit TTBR0 VA, 4 KiB granule, inner-shareable WB walks; TTBR1
@@ -58,7 +63,7 @@ int arch_mmu_enable_identity_map(void)
     const uint64_t mair = 0xff04ull;
     const uint64_t tcr = 25ull | (16ull << 16) | (1ull << 23) |
                          (1ull << 8) | (1ull << 10) | (3ull << 12);
-    const uint64_t ttbr = (uint64_t)(uintptr_t)g_l1;
+    const uint64_t ttbr = (uint64_t)(uintptr_t)cs->mmu_l1;
     __asm__ volatile(
         "msr daifset, #2\n\t"
         "dsb sy\n\t"
@@ -72,6 +77,6 @@ int arch_mmu_enable_identity_map(void)
         : : "r"(mair), "r"(tcr), "r"(ttbr) : "memory");
     sctlr |= (1ull << 0) | (1ull << 2) | (1ull << 12); /* M,C,I */
     __asm__ volatile("msr sctlr_el1, %0\n\tisb" : : "r"(sctlr) : "memory");
-    g_owned_map = 1;
+    cs->mmu_owned_map = 1;
     return arch_has_mmu();
 }

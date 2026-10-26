@@ -7,8 +7,7 @@
  * Cap'n Proto message whose root struct has N plain data words followed
  * by exactly one pointer field, a composite list of fixed-shape
  * structs with data words only (no per-element pointers). This is the
- * one shape both boot_protocol.h objects (MachineDescription,
- * InitDescription) need -- a list of cores, a list of init variants --
+ * shape boot_protocol.h's InitDescription needs -- a list of init variants --
  * and nothing else in this project has ever needed a real Cap'n Proto
  * list before (coreinit/capnp_build.h's capnp_build_flat is flat,
  * pointer-free, by its own explicit design).

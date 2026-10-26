@@ -3,6 +3,7 @@
 #include "cluster_scheduler.h"
 #include "serial.h"
 #include "arch_cpu.h"
+#include "core_state.h"
 
 /* Method IDs on the cluster scheduler object -- must match
  * cluster_scheduler.c's own METHOD_* defines exactly; duplicated here
@@ -41,9 +42,57 @@ void scheduler_client_init(
                     size_t, size_t *),
     capability_t cluster_scheduler, uint64_t my_node_id)
 {
-    g_invoke = invoke_fn;
-    g_cluster_scheduler = cluster_scheduler;
-    g_my_node_id = my_node_id;
+    struct core_state *cs = core_state_get();
+    if (cs) {
+        cs->scheduler_invoke = invoke_fn;
+        cs->scheduler_cluster = cluster_scheduler;
+        cs->scheduler_node_id = my_node_id;
+    } else {
+        g_invoke = invoke_fn;
+        g_cluster_scheduler = cluster_scheduler;
+        g_my_node_id = my_node_id;
+    }
+}
+
+static void scheduler_client(int (**out_invoke)(capability_t, uint32_t,
+                             const void *, size_t, void *, size_t, size_t *),
+                             capability_t *out_scheduler,
+                             uint64_t *out_node_id)
+{
+    struct core_state *cs = core_state_get();
+    if (cs && cs->scheduler_invoke) {
+        *out_invoke = cs->scheduler_invoke;
+        *out_scheduler = cs->scheduler_cluster;
+        *out_node_id = cs->scheduler_node_id;
+    } else {
+        *out_invoke = g_invoke;
+        *out_scheduler = g_cluster_scheduler;
+        *out_node_id = g_my_node_id;
+    }
+}
+
+static uint64_t scheduler_node_id(void)
+{
+    int (*invoke)(capability_t, uint32_t, const void *, size_t, void *,
+                  size_t, size_t *);
+    capability_t scheduler;
+    uint64_t node_id;
+    scheduler_client(&invoke, &scheduler, &node_id);
+    return node_id;
+}
+
+static int scheduler_call(uint32_t method_id, const void *msg, size_t len,
+                          void *response, size_t response_cap,
+                          size_t *out_response_len)
+{
+    int (*invoke)(capability_t, uint32_t, const void *, size_t, void *,
+                  size_t, size_t *);
+    capability_t scheduler;
+    uint64_t node_id;
+    scheduler_client(&invoke, &scheduler, &node_id);
+    (void)node_id;
+    return invoke(scheduler, method_id, msg, len, response, response_cap,
+                  out_response_len);
 }
 
 static uint64_t submit(uint64_t node_affinity, job_type_t type, uint64_t ctx,
@@ -58,7 +107,7 @@ static uint64_t submit(uint64_t node_affinity, job_type_t type, uint64_t ctx,
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 7);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_SUBMIT_JOB, req, req_len,
+    if (!scheduler_call(CS_METHOD_SUBMIT_JOB, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         kprintf("[coreinit]   scheduler: submit_job failed\n");
@@ -71,7 +120,7 @@ uint64_t scheduler_submit(job_type_t type, void *ctx, int priority,
                           uint64_t resource_id, uint64_t resource_kind,
                           uint64_t resource_min_capacity)
 {
-    return submit(g_my_node_id, type, (uint64_t)(uintptr_t)ctx, priority,
+    return submit(scheduler_node_id(), type, (uint64_t)(uintptr_t)ctx, priority,
                  resource_id, resource_kind, resource_min_capacity);
 }
 
@@ -87,12 +136,12 @@ uint64_t scheduler_submit_to_node(uint64_t target_node_id, job_type_t type,
 uint64_t scheduler_declare_resource(uint64_t kind, uint64_t descriptor,
                                     uint64_t capacity, uint64_t sync_kind)
 {
-    uint64_t words[5] = {g_my_node_id, kind, descriptor, capacity, sync_kind};
+    uint64_t words[5] = {scheduler_node_id(), kind, descriptor, capacity, sync_kind};
     uint8_t req[64];
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_DECLARE_RESOURCE, req,
+    if (!scheduler_call(CS_METHOD_DECLARE_RESOURCE, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
@@ -107,7 +156,7 @@ int scheduler_reassign_resource(uint64_t resource_id, uint64_t new_owner_node)
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_REASSIGN_RESOURCE, req,
+    if (!scheduler_call(CS_METHOD_REASSIGN_RESOURCE, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
@@ -118,12 +167,12 @@ int scheduler_reassign_resource(uint64_t resource_id, uint64_t new_owner_node)
 int scheduler_request_allocation(uint64_t base, uint64_t size, uint64_t kind,
                                  uint64_t sync_kind, uint64_t *out_resource_id)
 {
-    uint64_t words[5] = {g_my_node_id, base, size, kind, sync_kind};
+    uint64_t words[5] = {scheduler_node_id(), base, size, kind, sync_kind};
     uint8_t req[64];
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
     uint8_t resp[40];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_REQUEST_ALLOCATION, req,
+    if (!scheduler_call(CS_METHOD_REQUEST_ALLOCATION, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 32) {
         if (out_resource_id) *out_resource_id = 0;
@@ -144,7 +193,7 @@ int scheduler_get_resource_info(uint64_t resource_id, uint64_t *out_owner_node,
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 1);
     uint8_t resp[64];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_GET_RESOURCE_INFO, req,
+    if (!scheduler_call(CS_METHOD_GET_RESOURCE_INFO, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 56) {
         if (out_owner_node) *out_owner_node = 0;
@@ -166,7 +215,7 @@ int scheduler_get_resource_info(uint64_t resource_id, uint64_t *out_owner_node,
 
 uint64_t scheduler_get_my_node_id(void)
 {
-    return g_my_node_id;
+    return scheduler_node_id();
 }
 
 /* Method 11: node_id, size, kind, sync_kind -> ok, resource_id, base.
@@ -188,12 +237,12 @@ int scheduler_allocate_slice(uint64_t size, uint64_t kind, uint64_t sync_kind,
                              uint64_t self_job_id, uint64_t *out_resource_id,
                              uint64_t *out_base)
 {
-    uint64_t words[5] = {g_my_node_id, self_job_id, size, kind, sync_kind};
+    uint64_t words[5] = {scheduler_node_id(), self_job_id, size, kind, sync_kind};
     uint8_t req[64];
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
     uint8_t resp[48];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_ALLOCATE_SLICE, req, req_len,
+    if (!scheduler_call(CS_METHOD_ALLOCATE_SLICE, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 32) {
         if (out_resource_id) *out_resource_id = 0;
@@ -217,7 +266,7 @@ int scheduler_release_slice(uint64_t resource_id, uint64_t self_job_id)
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_RELEASE_SLICE, req, req_len,
+    if (!scheduler_call(CS_METHOD_RELEASE_SLICE, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
@@ -232,7 +281,7 @@ int scheduler_mutex_try_lock(int mutex_id, uint64_t self_job_id)
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!g_invoke(g_cluster_scheduler, CS_METHOD_MUTEX_TRY_LOCK, req, req_len,
+    if (!scheduler_call(CS_METHOD_MUTEX_TRY_LOCK, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
@@ -245,7 +294,7 @@ void scheduler_mutex_unlock(int mutex_id, uint64_t self_job_id)
     uint64_t words[2] = {(uint64_t)mutex_id, self_job_id};
     uint8_t req[40];
     size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
-    g_invoke(g_cluster_scheduler, CS_METHOD_MUTEX_UNLOCK, req, req_len, NULL,
+    scheduler_call(CS_METHOD_MUTEX_UNLOCK, req, req_len, NULL,
             0, NULL);
 }
 
@@ -255,7 +304,7 @@ void scheduler_run(void)
             "cluster scheduler -- this node is now a pull-based worker, "
             "no local job queue left to fall back on\n");
 
-    uint64_t self_req_words[1] = {g_my_node_id};
+    uint64_t self_req_words[1] = {scheduler_node_id()};
     uint8_t self_req[24];
     size_t self_req_len = capnp_build_flat(self_req, sizeof(self_req),
                                            self_req_words, 1);
@@ -263,7 +312,7 @@ void scheduler_run(void)
     for (;;) {
         uint8_t resp[64];
         size_t resp_len = 0;
-        if (!g_invoke(g_cluster_scheduler, CS_METHOD_GET_NEXT_JOB, self_req,
+        if (!scheduler_call(CS_METHOD_GET_NEXT_JOB, self_req,
                      self_req_len, resp, sizeof(resp), &resp_len) ||
             resp_len < 48) {
             arch_cpu_wait_for_interrupt();
@@ -296,7 +345,7 @@ void scheduler_run(void)
         uint8_t report_req[48];
         size_t report_req_len =
             capnp_build_flat(report_req, sizeof(report_req), report_words, 3);
-        g_invoke(g_cluster_scheduler, CS_METHOD_REPORT_JOB_RESULT, report_req,
+        scheduler_call(CS_METHOD_REPORT_JOB_RESULT, report_req,
                 report_req_len, NULL, 0, NULL);
     }
 }

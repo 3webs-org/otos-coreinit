@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "try_lock.h"
 #include "arch_cpu.h"
+#include "boot_protocol.h"
 #include "../include/smp_layout.h"
 
 #define MAX_CLAIMS 64
@@ -140,7 +141,7 @@ static int free_locked(uint64_t base)
     return 0;
 }
 
-void memory_manager_init_schema(void)
+void memory_manager_init_schema(const struct init_boot_info *info)
 {
     trylock_init(&g_lock);
     g_claim_count = 0;
@@ -168,24 +169,30 @@ void memory_manager_init_schema(void)
      * x86 real-mode trampoline at 0x8000. */
     claim_locked(BSP_MAILBOX_REGION_BASE + CORE_MAILBOX_OFFSET,
                  CORE_MAILBOX_SIZE, MEM_KIND_KERNEL_RESERVED);
-    /* The new boot protocol's own fixed destinations (see
-     * smp_layout.h's own comment on BOOT_PROTO_OBJECTS_BASE/
-     * SASKI_AP_POOL_BASE): the three MachineDescription/
-     * InitDescription/SaskiBootParams objects a loader copies here,
-     * and the pool saski itself bump-allocates AP stacks/page tables
-     * from. Both are reserved unconditionally, whether or not this
-     * boot actually came from a loader implementing the new protocol
-     * -- claimed simply by what they are, the same convention every
-     * other known-reserved region here already uses, so a future
-     * dynamic allocation can never land on top of them even on a
-     * build that never populates them. */
-    claim_locked(BOOT_PROTO_OBJECTS_BASE, BOOT_PROTO_OBJECTS_SIZE,
-                 MEM_KIND_KERNEL_RESERVED);
-    claim_locked(SASKI_AP_POOL_BASE, SASKI_AP_POOL_SIZE,
-                 MEM_KIND_KERNEL_RESERVED);
 #else
     claim_locked(0x8000, 0x1000, MEM_KIND_KERNEL_RESERVED); /* AP trampoline */
 #endif
+    /* The allocator region may be fixed (otos-boot) or chosen at run
+     * time (otos-grub). Read its actual extent through InitDescription
+     * instead of reserving one loader's address unconditionally. */
+    if (info && info->init_description_phys) {
+        const struct init_description_data *description =
+            (const struct init_description_data *)(uintptr_t)
+            capnp_read_flat((const void *)(uintptr_t)
+                            info->init_description_phys);
+        if (description->magic == INIT_DESCRIPTION_MAGIC &&
+            description->coreinit_allocator_phys) {
+            const struct boot_allocator *allocator =
+                (const struct boot_allocator *)(uintptr_t)
+                capnp_read_flat((const void *)(uintptr_t)
+                                description->coreinit_allocator_phys);
+            if (allocator->magic == BOOT_ALLOCATOR_MAGIC &&
+                allocator->region_base && allocator->region_len) {
+                claim_locked(allocator->region_base, allocator->region_len,
+                             MEM_KIND_KERNEL_RESERVED);
+            }
+        }
+    }
     claim_locked(BSP_INIT_LOAD_BASE, 0x400000, MEM_KIND_KERNEL_RESERVED); /* BSP
                  * coreinit's own loaded image -- see smp_layout.h's own
                  * note on why this is claimed explicitly now: a future
