@@ -29,6 +29,12 @@ static int (*g_invoke)(capability_t, uint32_t, const void *, size_t, void *,
                        size_t, size_t *);
 static capability_t g_cluster_scheduler;
 static uint64_t g_my_node_id;
+static scheduler_idle_hook_t g_idle_hook;
+
+void scheduler_set_idle_hook(scheduler_idle_hook_t hook)
+{
+    g_idle_hook = hook;
+}
 
 void scheduler_register_job_type(job_type_t type, job_fn_t fn)
 {
@@ -322,6 +328,7 @@ void scheduler_run(void)
         const uint64_t *out = capnp_read_flat(resp);
         uint64_t found = out[0];
         if (!found) {
+            if (g_idle_hook && g_idle_hook()) continue;
             arch_cpu_wait_for_interrupt();
             continue;
         }

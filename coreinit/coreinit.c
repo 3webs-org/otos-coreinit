@@ -475,10 +475,14 @@ static void tick_counter_handler(void *data, uint32_t method_id,
     }
 }
 
-/* First genuine two-machine capability proof. Both machines create an
- * ordinary Plain object. MAC ...:01 advertises and serves it; MAC ...:02
- * discovers the advertisement, creates a routed LOCAL proxy, and invokes
- * that proxy through its own kernel exactly like any local capability. */
+/* First genuine two-machine capability service. MAC ...:01 exports this
+ * executor from the scheduler's idle loop; MAC ...:02 invokes it from an
+ * ordinary scheduled job through a routed LOCAL proxy. */
+static capability_t g_network_executor;
+static uint64_t g_network_machine_node;
+static uint64_t g_network_owner_core;
+static uint32_t g_network_service_polls;
+
 static void network_executor_handler(void *data, uint32_t method_id,
                                      const void *msg, size_t len,
                                      void *response, size_t response_cap,
@@ -497,62 +501,55 @@ static void network_executor_handler(void *data, uint32_t method_id,
     *out_response_len = capnp_build_flat(response, response_cap, out, 2);
 }
 
-static void network_two_machine_demo(void)
+static int network_service_poll(void)
 {
-    if (!network_device_present()) return;
-    capability_t executor = create_object(network_executor_handler, NULL,
-                                          &g_remote_executor_table, 0);
-    if (!executor.handle) return;
-    const uint8_t *mac = network_device_mac();
-    uint64_t local_machine_node = mac[5];
-    if (mac[5] == 1) {
-        kprintf("[coreinit] NETWORK JOB SERVER: advertising executor "
-                "0x%llX as node %u\n",
-                (unsigned long long)executor.handle,
-                (unsigned)local_machine_node);
-        for (uint32_t spins = 0; spins < 100000000u; spins++) {
-            if ((spins % 10000u) == 0)
-                network_ether_announce(local_machine_node, executor);
-            if (network_ether_serve_once(local_machine_node,
-                                         g_kernel_invoke)) {
-                kprintf("[coreinit] NETWORK JOB SERVER: response sent\n");
-                return;
-            }
-        }
-        kprintf("[coreinit] NETWORK JOB SERVER: timed out\n");
-    } else if (mac[5] == 2) {
-        uint64_t remote_node = 0;
-        capability_t remote = {0};
-        uint8_t remote_mac[6];
-        if (!network_ether_wait_announcement(&remote_node, &remote,
-                                             remote_mac)) {
-            kprintf("[coreinit] NETWORK RPC CLIENT: discovery timed out\n");
-            return;
-        }
-        network_ether_route_t route;
-        for (unsigned i = 0; i < 6; i++) route.peer_mac[i] = remote_mac[i];
-        network_rpc_session_t session;
-        network_rpc_session_init(&session, local_machine_node, remote_node,
-                                 network_ether_exchange, &route);
-        capability_t proxy = create_routed_proxy(
-            remote, network_rpc_invoke, &session, &g_remote_executor_table, 0);
-        uint64_t words[3] = {1, 20, 22};
-        uint8_t req[40], resp[32];
-        size_t req_len = capnp_build_flat(req, sizeof(req), words, 3);
+    if (g_network_machine_node != 1 || !g_network_executor.handle ||
+        topology_self_id() != g_network_owner_core) return 0;
+    if ((g_network_service_polls++ & 0x3ffu) == 0)
+        network_ether_announce(g_network_machine_node, g_network_executor);
+    if (network_ether_serve_once(g_network_machine_node, g_kernel_invoke))
+        kprintf("[coreinit] NETWORK JOB SERVER: response sent from long-lived service\n");
+    return 1; /* polling NIC: do not enter WFI */
+}
+
+static job_result_t job_network_remote_demo(void *ctx, uint64_t self_job_id,
+                                            uint64_t *out_block_id)
+{
+    (void)ctx; (void)self_job_id; (void)out_block_id;
+    uint64_t remote_node = 0;
+    capability_t remote = {0};
+    uint8_t remote_mac[6];
+    if (!network_ether_wait_announcement(&remote_node, &remote, remote_mac)) {
+        kprintf("[coreinit] NETWORK JOB CLIENT: discovery timed out\n");
+        return JOB_FINISHED;
+    }
+    static network_ether_route_t route;
+    for (unsigned i = 0; i < 6; i++) route.peer_mac[i] = remote_mac[i];
+    static network_rpc_session_t session;
+    network_rpc_session_init(&session, g_network_machine_node, remote_node,
+                             network_ether_exchange, &route);
+    capability_t proxy = create_routed_proxy(
+        remote, network_rpc_invoke, &session, &g_remote_executor_table, 0);
+    uint8_t req[40], resp[32];
+    const uint64_t calls[2][3] = {{1, 20, 22}, {1, 58, 42}};
+    const uint64_t expected[2] = {42, 100};
+    for (unsigned call = 0; call < 2; call++) {
+        size_t req_len = capnp_build_flat(req, sizeof(req), calls[call], 3);
         size_t resp_len = 0;
         if (proxy.handle && g_kernel_invoke(proxy, 0, req, req_len,
                                             resp, sizeof(resp), &resp_len) &&
             resp_len >= 32) {
             const uint64_t *out = capnp_read_flat(resp);
-            kprintf("[coreinit] NETWORK JOB CLIENT: local proxy returned "
-                    "ok=%u result=%u through node %u%s\n",
-                    (unsigned)out[0], (unsigned)out[1],
-                    (unsigned)remote_node,
-                    (out[0] && out[1] == 42) ? " -- PASS" : " -- FAIL");
+            kprintf("[coreinit] NETWORK JOB CLIENT: scheduled call %u returned "
+                    "ok=%u result=%u through node %u%s\n", call + 1,
+                    (unsigned)out[0], (unsigned)out[1], (unsigned)remote_node,
+                    (out[0] && out[1] == expected[call])
+                        ? " -- PASS" : " -- FAIL");
         } else {
-            kprintf("[coreinit] NETWORK JOB CLIENT: invocation failed\n");
+            kprintf("[coreinit] NETWORK JOB CLIENT: call %u failed\n", call + 1);
         }
     }
+    return JOB_FINISHED;
 }
 
 /* ---- The hardware mutex: guards genuinely shared, non-SMP-safe legacy
@@ -1291,6 +1288,8 @@ static void register_job_types(void)
     scheduler_register_job_type(JOB_TYPE_STREAM_COW_VERIFY,
                                 job_stream_cow_verify);
     scheduler_register_job_type(JOB_TYPE_SECURINIT_BOOT, job_securinit_boot);
+    scheduler_register_job_type(JOB_TYPE_NETWORK_REMOTE_DEMO,
+                                job_network_remote_demo);
 }
 
 void coreinit_main(struct init_boot_info *info)
@@ -1378,7 +1377,13 @@ void coreinit_main(struct init_boot_info *info)
         const uint8_t *mac = network_device_mac();
         kprintf("[coreinit] virtio-net ready, MAC %X:%X:%X:%X:%X:%X\n",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        network_two_machine_demo();
+        g_network_machine_node = mac[5];
+        g_network_owner_core = my_node_id;
+        g_network_executor = create_object(network_executor_handler, NULL,
+                                           &g_remote_executor_table, 0);
+        if (g_network_machine_node == 1 && g_network_executor.handle)
+            kprintf("[coreinit] NETWORK JOB SERVER: executor 0x%llX queued as a long-lived service\n",
+                    (unsigned long long)g_network_executor.handle);
     }
 
     kprintf("[coreinit] stage 1: running on the single-syscall "
@@ -1621,6 +1626,13 @@ void coreinit_main(struct init_boot_info *info)
 
     kprintf("\n[coreinit] === submitting jobs, then handing off to the "
             "scheduler ===\n");
+
+    if (network_device_present()) {
+        scheduler_set_idle_hook(network_service_poll);
+        if (g_network_machine_node == 2)
+            scheduler_submit(JOB_TYPE_NETWORK_REMOTE_DEMO, NULL, 200, 0,
+                             RESOURCE_KIND_NONE, 0);
+    }
 
     if (have_topo) {
         static timer_job_ctx_t timer_ctx;

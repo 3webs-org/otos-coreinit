@@ -44,7 +44,8 @@ typedef enum {
     JOB_TYPE_STREAM_SETUP = 7,
     JOB_TYPE_STREAM_COW_VERIFY = 8,
     JOB_TYPE_SECURINIT_BOOT = 9,
-    JOB_TYPE_COUNT = 10,
+    JOB_TYPE_NETWORK_REMOTE_DEMO = 10,
+    JOB_TYPE_COUNT = 11,
 } job_type_t;
 
 /* Registers the LOCAL function for a job type. Called once per node,
@@ -61,6 +62,13 @@ void scheduler_client_init(
                     const void *msg, size_t len, void *response,
                     size_t response_cap, size_t *out_response_len),
     capability_t cluster_scheduler, uint64_t my_node_id);
+
+/* Polling devices cannot wake arch_cpu_wait_for_interrupt().  A node that
+ * owns one may install a tiny nonblocking hook which is called whenever the
+ * cluster has no runnable job for that node.  Returning nonzero asks the
+ * scheduler to poll again instead of sleeping. */
+typedef int (*scheduler_idle_hook_t)(void);
+void scheduler_set_idle_hook(scheduler_idle_hook_t hook);
 
 /* Submits a job to run on THIS node (self-affinity) -- the ordinary
  * case, "I want this to happen here." ctx is an opaque uint64_t value;
