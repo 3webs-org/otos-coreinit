@@ -121,9 +121,10 @@ typedef struct {
 static struct {
     uint64_t base;
     uint8_t mac[6];
-    gem_desc_t rx_desc __attribute__((aligned(64)));
+    uint32_t rx_index;
+    gem_desc_t rx_desc[QUEUE_SIZE] __attribute__((aligned(64)));
     gem_desc_t tx_desc __attribute__((aligned(64)));
-    uint8_t rx_buffer[BUFFER_SIZE] __attribute__((aligned(64)));
+    uint8_t rx_buffer[QUEUE_SIZE][BUFFER_SIZE] __attribute__((aligned(64)));
     uint8_t tx_buffer[BUFFER_SIZE] __attribute__((aligned(64)));
 } g_gem;
 
@@ -279,13 +280,17 @@ static int gem_init(const void *blob, uint64_t node_id)
             fdt_reg_to_cpu_addr(blob, node, 0, &range)) break;
     }
     g_gem.base = range.base;
-    zero_bytes(&g_gem.rx_desc, sizeof(g_gem.rx_desc));
+    zero_bytes(g_gem.rx_desc, sizeof(g_gem.rx_desc));
     zero_bytes(&g_gem.tx_desc, sizeof(g_gem.tx_desc));
-    g_gem.rx_desc.address =
-        (uint32_t)(uintptr_t)g_gem.rx_buffer | GEM_RX_WRAP;
+    g_gem.rx_index = 0;
+    for (uint32_t i = 0; i < QUEUE_SIZE; i++) {
+        g_gem.rx_desc[i].address =
+            (uint32_t)(uintptr_t)g_gem.rx_buffer[i] |
+            (i + 1u == QUEUE_SIZE ? GEM_RX_WRAP : 0u);
+    }
     g_gem.tx_desc.address = (uint32_t)(uintptr_t)g_gem.tx_buffer;
     g_gem.tx_desc.status = GEM_TX_USED | GEM_TX_WRAP;
-    gem_cache_op(&g_gem.rx_desc, sizeof(g_gem.rx_desc), 0);
+    gem_cache_op(g_gem.rx_desc, sizeof(g_gem.rx_desc), 0);
     gem_cache_op(&g_gem.tx_desc, sizeof(g_gem.tx_desc), 0);
     /* The image loader's BSS clear can leave these lines dirty.  Clean the
      * RX area once before DMA starts so a later invalidate cannot write stale
@@ -296,7 +301,7 @@ static int gem_init(const void *blob, uint64_t node_id)
     gem_wr(GEM_IDR, 0xffffffffu);
     gem_wr(GEM_RSR, 0xffffffffu);
     gem_wr(GEM_TSR, 0xffffffffu);
-    gem_wr(GEM_RBQP, (uint32_t)(uintptr_t)&g_gem.rx_desc);
+    gem_wr(GEM_RBQP, (uint32_t)(uintptr_t)g_gem.rx_desc);
     gem_wr(GEM_TBQP, (uint32_t)(uintptr_t)&g_gem.tx_desc);
     gem_wr(GEM_DMACFG, 0x00180704u); /* 8-beat bursts, 1536-byte RX buffers. */
     uint32_t config = gem_rd(GEM_NCFGR);
@@ -387,30 +392,23 @@ int network_device_poll(void *frame, size_t capacity, size_t *out_len)
 {
     if (out_len) *out_len = 0;
     if (g_net_kind == NET_GEM) {
-        gem_cache_op(&g_gem.rx_desc, sizeof(g_gem.rx_desc), 1);
-        uint32_t observed_status = g_gem.rx_desc.status;
-        uint32_t completion = GEM_RX_SOF | GEM_RX_EOF;
-        if (!frame || (!(g_gem.rx_desc.address & GEM_RX_OWNED) &&
-                       (observed_status & completion) != completion)) {
-            return 0;
-        }
+        gem_desc_t *descriptor = &g_gem.rx_desc[g_gem.rx_index];
+        gem_cache_op(descriptor, sizeof(*descriptor), 1);
+        if (!frame || !(descriptor->address & GEM_RX_OWNED)) return 0;
+        uint32_t observed_status = descriptor->status;
         uint32_t status = observed_status;
         size_t len = status & GEM_RX_LENGTH;
         int complete = (status & (GEM_RX_SOF | GEM_RX_EOF)) ==
                        (GEM_RX_SOF | GEM_RX_EOF);
         if (len > capacity) len = capacity;
         if (complete) {
-            gem_cache_op(g_gem.rx_buffer, len, 1);
-            copy_bytes(frame, g_gem.rx_buffer, len);
+            gem_cache_op(g_gem.rx_buffer[g_gem.rx_index], len, 1);
+            copy_bytes(frame, g_gem.rx_buffer[g_gem.rx_index], len);
         }
-        g_gem.rx_desc.address &= ~GEM_RX_OWNED;
-        g_gem.rx_desc.status = 0;
-        gem_cache_op(&g_gem.rx_desc, sizeof(g_gem.rx_desc), 0);
-        /* This backend intentionally uses a one-entry polled ring.  Rewriting
-         * the queue base and receive-enable state makes the controller
-         * immediately reload the descriptor after software returns ownership. */
-        gem_wr(GEM_RBQP, (uint32_t)(uintptr_t)&g_gem.rx_desc);
-        gem_wr(GEM_NCR, gem_rd(GEM_NCR) | GEM_NCR_RXEN | GEM_NCR_TXEN);
+        descriptor->address &= ~GEM_RX_OWNED;
+        descriptor->status = 0;
+        gem_cache_op(descriptor, sizeof(*descriptor), 0);
+        g_gem.rx_index = (g_gem.rx_index + 1u) % QUEUE_SIZE;
         gem_wr(GEM_RSR, 0xffffffffu);
         if (!complete) return 0;
         if (out_len) *out_len = len;

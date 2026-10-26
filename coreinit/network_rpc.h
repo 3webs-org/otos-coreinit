@@ -46,6 +46,13 @@ int network_rpc_invoke(void *session_ctx, capability_t target,
  * Used by packet carriers so they never hand-parse routing fields. */
 int network_rpc_is_response(const void *packet, size_t packet_len);
 
+/* True only when response is the reply to request.  Packet carriers use
+ * this instead of accepting an arbitrary well-formed response that may have
+ * been delayed from an earlier exchange.  Both packets are decoded through
+ * the generated cproto envelope type. */
+int network_rpc_response_matches(const void *request, size_t request_len,
+                                 const void *response, size_t response_len);
+
 /* Server half. Validates destination, bounds, version, and packet identity
  * before invoking a capability in this machine's local kernel. */
 int network_rpc_serve(

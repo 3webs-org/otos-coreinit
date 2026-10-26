@@ -483,6 +483,7 @@ static capability_t g_network_scheduler;
 static uint64_t g_network_machine_node;
 static uint64_t g_network_owner_core;
 static uint32_t g_network_service_polls;
+static uint32_t g_network_announcement;
 static network_ether_route_t g_network_scheduler_route;
 static network_rpc_session_t g_network_scheduler_session;
 
@@ -508,16 +509,22 @@ static int network_service_poll(void)
 {
     if (g_network_machine_node != 1 || !g_network_executor.handle ||
         topology_self_id() != g_network_owner_core) return 0;
-    if ((g_network_service_polls++ & 0x3ffu) == 0) {
-        network_ether_announce(g_network_machine_node,
-                               NETWORK_SERVICE_EXECUTOR,
-                               g_network_executor);
-        if (g_network_scheduler.handle)
+    /* Replies have priority over discovery broadcasts.  In particular, do
+     * not put two announcements immediately in front of a reply: the small
+     * Cadence GEM backend intentionally has one receive descriptor, so such
+     * a burst can discard the reply even though the link itself is healthy. */
+    if (network_ether_serve_once(g_network_machine_node, g_kernel_invoke))
+        return 1;
+    if ((g_network_service_polls++ & 0xffffu) == 0) {
+        if ((g_network_announcement++ & 1u) && g_network_scheduler.handle)
             network_ether_announce(g_network_machine_node,
                                    NETWORK_SERVICE_CLUSTER_SCHEDULER,
                                    g_network_scheduler);
+        else
+            network_ether_announce(g_network_machine_node,
+                                   NETWORK_SERVICE_EXECUTOR,
+                                   g_network_executor);
     }
-    network_ether_serve_once(g_network_machine_node, g_kernel_invoke);
     return 1; /* polling NIC: do not enter WFI */
 }
 

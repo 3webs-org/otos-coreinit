@@ -58,6 +58,30 @@ int network_rpc_is_response(const void *packet, size_t packet_len)
            (uint32_t)(h->version_and_type >> 32) == NETWORK_RPC_RESPONSE;
 }
 
+int network_rpc_response_matches(const void *request, size_t request_len,
+                                 const void *response, size_t response_len)
+{
+    const coreinit_network_rpc_envelope_route_request_t *request_envelope =
+        read_envelope(request, request_len);
+    const coreinit_network_rpc_envelope_route_request_t *response_envelope =
+        read_envelope(response, response_len);
+    if (!request_envelope || !response_envelope ||
+        request_envelope->magic != NETWORK_RPC_MAGIC ||
+        response_envelope->magic != NETWORK_RPC_MAGIC ||
+        (uint32_t)request_envelope->version_and_type != NETWORK_RPC_VERSION ||
+        (uint32_t)response_envelope->version_and_type != NETWORK_RPC_VERSION ||
+        (uint32_t)(request_envelope->version_and_type >> 32) !=
+            NETWORK_RPC_REQUEST ||
+        (uint32_t)(response_envelope->version_and_type >> 32) !=
+            NETWORK_RPC_RESPONSE)
+        return 0;
+    return response_envelope->request_id == request_envelope->request_id &&
+           response_envelope->source_node ==
+               request_envelope->destination_node &&
+           response_envelope->destination_node ==
+               request_envelope->source_node;
+}
+
 int network_rpc_invoke(void *session_ctx, capability_t target,
                        uint32_t method_id, const void *msg, size_t len,
                        void *response, size_t response_cap,

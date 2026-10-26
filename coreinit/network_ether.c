@@ -106,7 +106,8 @@ int network_ether_exchange(void *ctx, const void *request, size_t request_len,
         size_t len = 0;
         if (poll(source, response, response_cap, &len) &&
             same_mac(source, route->peer_mac) &&
-            network_rpc_is_response(response, len)) {
+            network_rpc_response_matches(request, request_len,
+                                         response, len)) {
             if (out_response_len) *out_response_len = len;
             return 1;
         }
