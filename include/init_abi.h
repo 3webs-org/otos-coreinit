@@ -142,11 +142,6 @@ struct init_boot_info {
                                       * AP; the BSP sets this directly
                                       * after creating the resource
                                       * itself. */
-    uint64_t own_mailbox_base; /* where THIS core's own scheduler should
-                               * poll for cross-core job delivery --
-                               * BSP_MAILBOX_REGION_BASE + offset for the
-                               * BSP, region_base + offset for an AP; see
-                               * smp_layout.h's CORE_MAILBOX_OFFSET */
     uint64_t early_rsdp_phys; /* ACPI RSDP physical address, found by
                               * kernel.c's own xnu_boot_args_find_rsdp
                               * (real EFI configuration-table lookup)

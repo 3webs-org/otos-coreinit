@@ -389,7 +389,6 @@ static capability_t g_pool_resource; /* the one resource representing the
 typedef struct {
     uint64_t node_id;
     uint64_t arch;
-    uint64_t region_base;
     uint64_t signal_target; /* architecture-opaque, produced by the
                              * joining node's own cross_core_signal_my_
                              * target() and recorded here verbatim --
@@ -410,8 +409,8 @@ static void node_handler(void *data, uint32_t method_id, const void *msg,
     (void)msg;
     (void)len;
     node_data_t *n = (node_data_t *)data;
-    uint64_t out[3] = {n->node_id, n->arch, n->region_base};
-    *out_response_len = capnp_build_flat(response, response_cap, out, 3);
+    uint64_t out[2] = {n->node_id, n->arch};
+    *out_response_len = capnp_build_flat(response, response_cap, out, 2);
 }
 
 /* Nodes are physical cores -- MAX_NODES is a real, hardware-shaped
@@ -433,7 +432,6 @@ typedef struct {
 static node_index_entry_t g_node_index[MAX_NODES];
 
 static capability_t create_node_object(uint64_t node_id, uint64_t arch,
-                                       uint64_t region_base,
                                        uint64_t signal_target)
 {
     capability_t none = {0};
@@ -446,7 +444,6 @@ static capability_t create_node_object(uint64_t node_id, uint64_t arch,
     node_data_t *nd = (node_data_t *)(storage + CAP_RECORD_SIZE);
     nd->node_id = node_id;
     nd->arch = arch;
-    nd->region_base = region_base;
     nd->signal_target = signal_target;
 
     uint64_t create_words[5] = {(uint64_t)(uintptr_t)node_handler,
@@ -872,8 +869,8 @@ static void release_job_resource(capability_t job, uint64_t bound_resource_id)
 static void handle_join_node(const uint64_t *words, size_t *out_len)
 {
     *out_len = 0;
-    uint64_t node_id = words[0], arch = words[1], region_base = words[2];
-    uint64_t signal_target = words[3];
+    uint64_t node_id = words[0], arch = words[1];
+    uint64_t signal_target = words[2];
 
     if (node_find_by_id(node_id).handle != 0) {
         kprintf("[coreinit]   cluster_scheduler: node %u already joined, "
@@ -881,18 +878,17 @@ static void handle_join_node(const uint64_t *words, size_t *out_len)
                 (unsigned)node_id);
         return;
     }
-    capability_t node_obj =
-        create_node_object(node_id, arch, region_base, signal_target);
+    capability_t node_obj = create_node_object(node_id, arch, signal_target);
     if (node_obj.handle == 0) {
         kprintf("[coreinit]   cluster_scheduler: join failed, node pool "
                 "full\n");
         return;
     }
     kprintf("[coreinit]   cluster_scheduler: node %u joined (node object "
-            "0x%X), arch %u, region_base 0x%X, signal_target %u -- "
-            "resources declared separately, see declare_resource\n",
+            "0x%X), arch %u, signal_target %u -- resources declared "
+            "separately, see declare_resource\n",
             (unsigned)node_id, (unsigned)node_obj.handle, (unsigned)arch,
-            (unsigned)region_base, (unsigned)signal_target);
+            (unsigned)signal_target);
 }
 
 static void handle_leave_node(const uint64_t *words, size_t *out_len)

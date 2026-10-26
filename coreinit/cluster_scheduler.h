@@ -62,10 +62,10 @@
  * the same way: local invoke if you ARE the BSP, remote invoke (through
  * a local proxy -- see proxy.h) otherwise.
  *
- * Method 0 = join_node: {node_id: u64, arch: u64, region_base: u64,
+ * Method 0 = join_node: {node_id: u64, arch: u64,
  * signal_target: u64 (architecture-opaque -- see cross_core_signal.h;
  * this is how the cluster later reaches this node for an immediate
- * cross-core preemption signal, not just a mailbox poll)} ->
+ * cross-core preemption signal)} ->
  *   no response. Implicitly declares a CPU_CORE resource, owned by that
  *   node, for it too.
  *

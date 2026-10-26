@@ -1449,8 +1449,6 @@ void coreinit_main(struct init_boot_info *info)
      * join_node needs a real node id, which defaults sensibly to 0 if
      * ACPI discovery somehow failed. */
     register_job_types();
-    uint64_t my_region_base = is_bsp ? BSP_MAILBOX_REGION_BASE
-                                     : (info->own_mailbox_base - CORE_MAILBOX_OFFSET);
     /* Always the LOCAL kernel_invoke now -- cluster_scheduler is either
      * genuinely local (BSP) or a local proxy (AP), so there's no more
      * "which invoke function" special-casing needed here at all. */
@@ -1458,10 +1456,10 @@ void coreinit_main(struct init_boot_info *info)
 
     /* The architecture code this node joins as -- resolved per-arch, like
      * everything else in topology. */
-    uint64_t reg_words[4] = {my_node_id, topology_cluster_arch(), my_region_base,
+    uint64_t reg_words[3] = {my_node_id, topology_cluster_arch(),
                              cross_core_signal_my_target()};
     uint8_t reg_req[48];
-    size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 4);
+    size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 3);
     g_kernel_invoke(cluster_scheduler, 0, reg_req, reg_req_len, NULL, 0, NULL);
 
     /* Join is identity only -- resources are this node's own to

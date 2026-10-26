@@ -21,9 +21,10 @@
  * CORE_REGION_BASE + (core_index - 1) * CORE_REGION_SIZE.
  *
  * "Treat each kernel's assigned memory region like MMIO" -- the trailing
- * mailbox area is the ONLY part of a region anything outside that core
- * is meant to touch, and only through explicit volatile-qualified
- * accessors (see coreinit/mmio.h), never as ordinary shared C state. */
+ * reserved window (discovery record, per-core page tables) is the ONLY
+ * part of a region anything outside that core is meant to touch, and
+ * only through explicit volatile-qualified accessors (see
+ * coreinit/mmio.h), never as ordinary shared C state. */
 
 /* Both ports use the same offsets within a 4 MiB AP region; only its
  * physical base differs. QEMU virt RAM starts at 0x40000000 on ARM,
@@ -44,48 +45,35 @@
 #define CORE_STACK_OFFSET 0x300000ull
 #define CORE_STACK_SIZE 0x080000ull /* 512 KiB */
 
-/* The trailing coordination buffer -- "MMIO, plus a little extra
- * trailing buffer per core for limited coordination." Nothing about its
- * contents is a kernel concept; see coreinit/scheduler.c and
- * coreinit/cluster_scheduler.h for what actually lives here: a single
- * pending-job mailbox slot the cluster scheduler delivers into and this
- * core's own per-core scheduler drains on its own idle-loop checks.
- *
- * Cross-core job delivery ships a JOB TYPE, not a function pointer --
- * every core runs a byte-identical copy of init, so a small,
- * fixed vocabulary of job types (see scheduler.h's job_type_t) can be
- * dispatched through an identically-populated local table on whichever
- * core receives it, with zero pointer translation and zero risk of a
- * raw address from one core's private, differently-based memory being
- * meaningless on another's. ctx is a plain uint64_t value -- valid
- * cluster-wide only if it's either an ordinary integer the job
- * interprets itself, or a physical address into memory that is
- * genuinely shared (a claimed region from the memory manager, say),
- * never a pointer into a specific core's own relocated data segment. */
+/* Originally planned as a job "mailbox" -- a per-core slot the cluster
+ * scheduler would deliver a pending job into, polled on this core's own
+ * idle-loop checks. That delivery mechanism was never actually wired
+ * up: real cross-core job delivery goes entirely through the
+ * capability/IPC system instead (coreinit/scheduler.c's
+ * scheduler_submit_to_node invokes the shared, BSP-hosted cluster
+ * scheduler object's SUBMIT_JOB/GET_NEXT_JOB methods, the same
+ * mechanism as every other cross-core call in this codebase), so no
+ * code anywhere ever reads or writes a mailbox field at this offset.
+ * The name and the reserved window survive only because something
+ * still needs to be here -- an AP's own discovery record
+ * (CORE_DISCOVERY_OFFSET below) and per-core page tables
+ * (CORE_PGTABLE_OFFSET) are both carved out of this same generously-
+ * sized slack rather than growing CORE_REGION_SIZE -- not because a
+ * mailbox still lives at this specific offset. */
 #define CORE_MAILBOX_OFFSET 0x380000ull
 #define CORE_MAILBOX_SIZE 0x080000ull /* 512 KiB, generously more than needed */
-/* Mailbox layout at CORE_MAILBOX_OFFSET, each field a plain uint64_t:
- *   +0x00  pending flag (0 = empty, 1 = a job is waiting)
- *   +0x08  job_type (an index into scheduler.h's job_type_t vocabulary)
- *   +0x10  ctx (see the cluster-wide-validity note above)
- *   +0x18  priority
- */
-#define CORE_MAILBOX_PENDING_OFF 0x00ull
-#define CORE_MAILBOX_JOB_TYPE_OFF 0x08ull
-#define CORE_MAILBOX_CTX_OFF 0x10ull
-#define CORE_MAILBOX_PRIORITY_OFF 0x18ull
 
 /* The BSP doesn't live inside the CORE_REGION_BASE scheme at all (it
- * stays wherever GRUB originally placed it) but still needs a mailbox
- * for the same reason every AP does -- so it gets one dedicated,
- * virtual "region base" purely for the mailbox-address arithmetic to
- * work uniformly (mailbox = region_base + CORE_MAILBOX_OFFSET, same
- * formula everywhere). Reference point chosen safely above where the
- * kernel/init modules actually land -- see BSP_INIT_LOAD_BASE's
- * own comment for the full picture; this specific value (18 MiB)
- * clears this project's own Mach-O/GRUB-xnu kernel image (loaded at
- * 16 MiB via -pagezero_size, extending to roughly 16.2 MiB) with room
- * to spare. */
+ * stays wherever GRUB originally placed it), but mem_mgr.c still walls
+ * off the equivalent of an AP's own reserved scratch window for it, so
+ * it gets one dedicated, virtual "region base" purely for that
+ * reservation's address arithmetic to work uniformly (same formula,
+ * region_base + CORE_MAILBOX_OFFSET, everywhere). Reference point
+ * chosen safely above where the kernel/init modules actually land --
+ * see BSP_INIT_LOAD_BASE's own comment for the full picture; this
+ * specific value (18 MiB) clears this project's own Mach-O/GRUB-xnu
+ * kernel image (loaded at 16 MiB via -pagezero_size, extending to
+ * roughly 16.2 MiB) with room to spare. */
 #if defined(__aarch64__)
 #define BSP_MAILBOX_REGION_BASE (0x41800000ull - CORE_MAILBOX_OFFSET)
 #else
