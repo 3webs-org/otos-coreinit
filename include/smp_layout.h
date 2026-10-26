@@ -1,7 +1,7 @@
 #pragma once
 
-/* The __aarch64__ physical addresses in this file are QEMU virt's 512 MiB
- * reference layout (RAM 0x40000000..0x60000000), not a general ARM ABI.
+/* The __aarch64__ physical addresses in this file are offsets within the
+ * configured AARCH64_RAM_BASE, defaulting to QEMU virt's 0x40000000.
  * The AP region's internal offsets are architecture-neutral; another ARM
  * board, or a smaller RAM configuration, must place regions from its own
  * discovered memory map before enabling AP boot or the allocation pool.
@@ -30,7 +30,10 @@
  * physical base differs. QEMU virt RAM starts at 0x40000000 on ARM,
  * whereas 0x4000000 is usable low RAM on x86. */
 #if defined(__aarch64__)
-#define CORE_REGION_BASE 0x42000000ull /* 32 MiB into QEMU virt RAM */
+#ifndef AARCH64_RAM_BASE
+#define AARCH64_RAM_BASE 0x40000000ull
+#endif
+#define CORE_REGION_BASE (AARCH64_RAM_BASE + 0x02000000ull)
 #else
 #define CORE_REGION_BASE 0x4000000ull  /* 64 MiB */
 #endif
@@ -75,7 +78,8 @@
  * kernel image (loaded at 16 MiB via -pagezero_size, extending to
  * roughly 16.2 MiB) with room to spare. */
 #if defined(__aarch64__)
-#define BSP_MAILBOX_REGION_BASE (0x41800000ull - CORE_MAILBOX_OFFSET)
+#define BSP_MAILBOX_REGION_BASE \
+    (AARCH64_RAM_BASE + 0x01800000ull - CORE_MAILBOX_OFFSET)
 #else
 #define BSP_MAILBOX_REGION_BASE (0x1200000ull - CORE_MAILBOX_OFFSET)
 #endif
@@ -131,7 +135,7 @@
 /* The ARM kernel is linked at RAM + 16 MiB for the -kernel, EFI-stub,
  * and GRUB xnu paths; x86 retains its own 16 MiB low-RAM load base. */
 #if defined(__aarch64__)
-#define KERNEL_LOAD_BASE 0x41000000ull
+#define KERNEL_LOAD_BASE (AARCH64_RAM_BASE + 0x01000000ull)
 #else
 #define KERNEL_LOAD_BASE 0x1000000ull
 #endif
@@ -170,7 +174,7 @@
  * actual fix, same reasoning as before, just repeated once more
  * against a different collision. */
 #if defined(__aarch64__)
-#define BSP_INIT_LOAD_BASE 0x40200000ull /* 2 MiB into QEMU virt RAM */
+#define BSP_INIT_LOAD_BASE (AARCH64_RAM_BASE + 0x00200000ull)
 #else
 #define BSP_INIT_LOAD_BASE 0x1800000ull /* 24 MiB */
 #endif
@@ -217,7 +221,7 @@
  * and guessing an x86_64 address here before any x86_64 loader exists
  * to use it would be exactly that, a guess. */
 #if defined(__aarch64__)
-#define BOOT_ALLOCATOR_REGION_BASE 0x41880000ull
+#define BOOT_ALLOCATOR_REGION_BASE (AARCH64_RAM_BASE + 0x01880000ull)
 #define BOOT_ALLOCATOR_REGION_SIZE 0x00110000ull
 #endif
 
@@ -235,8 +239,8 @@
 /* Max 64 AP regions occupy 0x42000000..0x52000000. Leave 32 MiB
  * between those regions and this 64 MiB pool; keep another 128 MiB
  * before the end of QEMU virt's standard 512 MiB RAM/EFI tables. */
-#define ALLOC_MIN 0x54000000ull
-#define ALLOC_MAX 0x58000000ull
+#define ALLOC_MIN (AARCH64_RAM_BASE + 0x14000000ull)
+#define ALLOC_MAX (AARCH64_RAM_BASE + 0x18000000ull)
 #else
 #define ALLOC_MIN 0x1C00000ull  /* 28 MiB */
 #define ALLOC_MAX CORE_REGION_BASE /* 64 MiB */

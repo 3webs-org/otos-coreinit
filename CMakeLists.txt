@@ -104,6 +104,9 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     set(NOLINK_SOURCES coreinit/ap_trampoline_x86_64.S)
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     set(LD_ARCH arm64)
+    set(AARCH64_RAM_BASE "0x40000000" CACHE STRING
+        "Physical RAM base used by the ARM64 platform")
+    add_compile_definitions(AARCH64_RAM_BASE=${AARCH64_RAM_BASE})
     # 0x40200000 is 2 MiB into QEMU virt's RAM (base 0x40000000) -- the
     # x86 convention's 24 MiB is below virt's RAM base and would be an
     # unloadable image. coreinit still declares its own load address and
@@ -120,7 +123,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     # (0x40400000 is 4 MiB in) rather than shrinking the kernel: coreinit
     # declares its own address, so this is a one-line change on this side
     # with no kernel edit.
-    set(PAGEZERO 0x40200000)
+    math(EXPR PAGEZERO "${AARCH64_RAM_BASE} + 0x200000"
+         OUTPUT_FORMAT HEXADECIMAL)
     set(WRAPPER_PREFIX arm_wrapper)
     set(WRAPPER_ASM securinit/arm_wrapper_aarch64.S)
     set(CORE_SOURCES

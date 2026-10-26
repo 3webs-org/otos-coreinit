@@ -9,7 +9,10 @@
 
 #define PAGE_SIZE 4096ull
 #define REGION_SIZE 0x200000ull
-#define RAM_BASE 0x40000000ull
+#ifndef AARCH64_RAM_BASE
+#define AARCH64_RAM_BASE 0x40000000ull
+#endif
+#define RAM_BASE AARCH64_RAM_BASE
 #define RAM_END 0x80000000ull
 #define ADDR_MASK 0x0000FFFFFFFFF000ull
 #define VALID 0x1ull

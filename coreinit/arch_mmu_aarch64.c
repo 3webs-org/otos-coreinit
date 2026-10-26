@@ -13,7 +13,10 @@
 #include "core_state.h"
 #include <stdint.h>
 
-#define ARM_RAM_BASE 0x40000000ull
+#ifndef AARCH64_RAM_BASE
+#define AARCH64_RAM_BASE 0x40000000ull
+#endif
+#define ARM_RAM_BASE AARCH64_RAM_BASE
 #define DESC_BLOCK 0x1ull
 #define DESC_AF (1ull << 10)
 #define DESC_UXN (1ull << 54)
