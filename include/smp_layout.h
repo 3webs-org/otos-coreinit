@@ -106,6 +106,8 @@
  *          job_kprintf's own note for why this exists)
  *   +0x38  early_rsdp_phys (the ACPI RSDP physical address the BSP
  *          discovered; see init_abi.h's own boot_info field of that name)
+ *   +0x40  ap_core_state_phys (the AP's preallocated per-core state; legacy
+ *          copied-image APs cannot reach InitDescription's allocator)
  *
  * That last field is here for the same reason lapic_calibration_count is:
  * it is a fact the BSP discovered and an AP cannot discover for itself.
@@ -124,6 +126,7 @@
 #define CORE_DISCOVERY_CLUSTER_SCHED_OFF 0x28ull
 #define CORE_DISCOVERY_SERIAL_RESOURCE_OFF 0x30ull
 #define CORE_DISCOVERY_RSDP_OFF 0x38ull
+#define CORE_DISCOVERY_AP_CORE_STATE_OFF 0x40ull
 
 /* The ARM kernel is linked at RAM + 16 MiB for the -kernel, EFI-stub,
  * and GRUB xnu paths; x86 retains its own 16 MiB low-RAM load base. */

@@ -403,6 +403,24 @@ void smp_bring_up_all(const topology_t *topo,
                 "0x%llX (claimed)\n",
                 (unsigned long long)target, (unsigned long long)region_base);
 
+        struct core_state *ap_state = core_state_alloc_ap(info);
+        uint64_t ap_state_resource = 0, ap_state_base = 0;
+        if (!ap_state && scheduler_allocate_slice(
+                sizeof(*ap_state), MEM_KIND_JOB_SLICE,
+                RESOURCE_SYNC_TRANSFER, 0, &ap_state_resource,
+                &ap_state_base)) {
+            ap_state = (struct core_state *)(uintptr_t)ap_state_base;
+            uint8_t *state_bytes = (uint8_t *)ap_state;
+            for (size_t b = 0; b < sizeof(*ap_state); b++) state_bytes[b] = 0;
+        }
+        if (!ap_state) {
+            kprintf("[coreinit]   smp: could not allocate per-core state for "
+                    "mpidr=0x%llX -- skipping this core\n",
+                    (unsigned long long)target);
+            continue;
+        }
+        (void)ap_state_resource; /* Persistent for the lifetime of this AP. */
+
         /* A raw, byte-for-byte copy of this kernel's own currently-loaded
          * image, not a re-parsed/re-loaded one -- identical reasoning to
          * the x86_64 backend's: this kernel is PIE, already correctly laid
@@ -461,6 +479,9 @@ void smp_bring_up_all(const topology_t *topo,
          * early_rsdp_phys it used into each AP's discovery record. */
         write_u64(region_base + CORE_DISCOVERY_OFFSET + CORE_DISCOVERY_RSDP_OFF,
                   info->early_rsdp_phys);
+        write_u64(region_base + CORE_DISCOVERY_OFFSET +
+                      CORE_DISCOVERY_AP_CORE_STATE_OFF,
+                  (uint64_t)(uintptr_t)ap_state);
 
         /* The entry point is inside the copy, not in the BSP's own image:
          * the delta from where this kernel was linked to where it loaded is
@@ -501,7 +522,8 @@ void smp_bring_up_all(const topology_t *topo,
          * in RAM before firmware can start executing the new core. */
         clean_to_poc(region_base + CORE_KERNEL_OFFSET, info->kernel_image_len);
         clean_to_poc(region_base + CORE_DISCOVERY_OFFSET,
-                     CORE_DISCOVERY_RSDP_OFF + sizeof(uint64_t));
+                     CORE_DISCOVERY_AP_CORE_STATE_OFF + sizeof(uint64_t));
+        clean_to_poc((uint64_t)(uintptr_t)ap_state, sizeof(*ap_state));
         __asm__ volatile("dsb sy\n\tisb" ::: "memory");
         uint64_t ret = psci_call(cpu_on_fid, target, entry, region_base, use_hvc);
         if (ret == PSCI_SUCCESS) {
