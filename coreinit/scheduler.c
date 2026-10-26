@@ -1,28 +1,8 @@
 #include "scheduler.h"
-#include "capnp_build.h"
 #include "cluster_scheduler.h"
 #include "serial.h"
 #include "arch_cpu.h"
 #include "core_state.h"
-
-/* Method IDs on the cluster scheduler object -- must match
- * cluster_scheduler.c's own METHOD_* defines exactly; duplicated here
- * by necessity, the same reason the kernel/coreinit ABI boundary is
- * duplicated in both headers rather than shared. */
-#define CS_METHOD_JOIN_NODE 0
-#define CS_METHOD_LEAVE_NODE 1
-#define CS_METHOD_REQUEST_ALLOCATION 2
-#define CS_METHOD_DECLARE_RESOURCE 3
-#define CS_METHOD_REASSIGN_RESOURCE 4
-#define CS_METHOD_SUBMIT_JOB 5
-#define CS_METHOD_GET_NEXT_JOB 6
-#define CS_METHOD_REPORT_JOB_RESULT 7
-#define CS_METHOD_MUTEX_TRY_LOCK 8
-#define CS_METHOD_MUTEX_UNLOCK 9
-#define CS_METHOD_GET_RESOURCE_INFO 10
-#define CS_METHOD_ALLOCATE_SLICE 11
-#define CS_METHOD_RELEASE_SLICE 12
-#define CS_METHOD_GET_JOB_RESULT 14
 
 static job_fn_t g_job_type_table[JOB_TYPE_COUNT];
 static job_value_fn_t g_job_value_type_table[JOB_TYPE_COUNT];
@@ -113,22 +93,28 @@ static uint64_t submit(uint64_t node_affinity, job_type_t type,
                        uint64_t resource_id,
                        uint64_t resource_kind, uint64_t resource_min_capacity)
 {
-    uint64_t words[8] = {node_affinity,       (uint64_t)type,
-                         arg0,                arg1,
-                         (uint64_t)priority,
-                         resource_id,          resource_kind,
-                         resource_min_capacity};
+    coreinit_cluster_scheduler_submit_job_request_t request = {
+        .node_affinity = node_affinity,
+        .job_type = type,
+        .arg0 = arg0,
+        .arg1 = arg1,
+        .priority = (uint64_t)priority,
+        .resource_id = resource_id,
+        .resource_kind = resource_kind,
+        .resource_min_capacity = resource_min_capacity,
+    };
     uint8_t req[96];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 8);
+    size_t req_len = coreinit_cluster_scheduler_submit_job_request_encode(
+        req, sizeof(req), &request);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_SUBMIT_JOB, req, req_len,
+    if (!scheduler_call(METHOD_SUBMIT_JOB, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         kprintf("[coreinit]   scheduler: submit_job failed\n");
         return 0;
     }
-    return capnp_read_flat(resp)[0];
+    return coreinit_cluster_scheduler_submit_job_response_read(resp)->job_id;
 }
 
 uint64_t scheduler_submit(job_type_t type, void *ctx, int priority,
@@ -161,65 +147,86 @@ uint64_t scheduler_submit_values_to_node(
 int scheduler_get_job_result(uint64_t job_id, uint64_t *out_value)
 {
     uint8_t req[24], resp[32];
-    size_t req_len = capnp_build_flat(req, sizeof(req), &job_id, 1);
+    coreinit_cluster_scheduler_get_job_result_request_t request = {
+        .job_handle = job_id,
+    };
+    size_t req_len = coreinit_cluster_scheduler_get_job_result_request_encode(
+        req, sizeof(req), &request);
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_GET_JOB_RESULT, req, req_len, resp,
+    if (!scheduler_call(METHOD_GET_JOB_RESULT, req, req_len, resp,
                         sizeof(resp), &resp_len) || resp_len < 32)
         return 0;
-    const uint64_t *out = capnp_read_flat(resp);
-    if (!out[0]) return 0;
-    if (out_value) *out_value = out[1];
+    const coreinit_cluster_scheduler_get_job_result_response_t *result =
+        coreinit_cluster_scheduler_get_job_result_response_read(resp);
+    if (!result->done) return 0;
+    if (out_value) *out_value = result->value;
     return 1;
 }
 
 uint64_t scheduler_declare_resource(uint64_t kind, uint64_t descriptor,
                                     uint64_t capacity, uint64_t sync_kind)
 {
-    uint64_t words[5] = {scheduler_node_id(), kind, descriptor, capacity, sync_kind};
+    coreinit_cluster_scheduler_declare_resource_request_t request = {
+        .node_id = scheduler_node_id(), .kind = kind,
+        .descriptor = descriptor, .capacity = capacity,
+        .sync_kind = sync_kind,
+    };
     uint8_t req[64];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
+    size_t req_len = coreinit_cluster_scheduler_declare_resource_request_encode(
+        req, sizeof(req), &request);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_DECLARE_RESOURCE, req,
+    if (!scheduler_call(METHOD_DECLARE_RESOURCE, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
     }
-    return capnp_read_flat(resp)[0];
+    return coreinit_cluster_scheduler_declare_resource_response_read(resp)
+        ->resource_id;
 }
 
 int scheduler_reassign_resource(uint64_t resource_id, uint64_t new_owner_node)
 {
-    uint64_t words[2] = {resource_id, new_owner_node};
+    coreinit_cluster_scheduler_reassign_resource_request_t request = {
+        .resource_id = resource_id, .new_owner_node = new_owner_node,
+    };
     uint8_t req[40];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
+    size_t req_len = coreinit_cluster_scheduler_reassign_resource_request_encode(
+        req, sizeof(req), &request);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_REASSIGN_RESOURCE, req,
+    if (!scheduler_call(METHOD_REASSIGN_RESOURCE, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
     }
-    return capnp_read_flat(resp)[0] != 0;
+    return coreinit_cluster_scheduler_reassign_resource_response_read(resp)
+        ->ok != 0;
 }
 
 int scheduler_request_allocation(uint64_t base, uint64_t size, uint64_t kind,
                                  uint64_t sync_kind, uint64_t *out_resource_id)
 {
-    uint64_t words[5] = {scheduler_node_id(), base, size, kind, sync_kind};
+    coreinit_cluster_scheduler_request_allocation_request_t request = {
+        .node_id = scheduler_node_id(), .base = base, .size = size,
+        .kind = kind, .sync_kind = sync_kind,
+    };
     uint8_t req[64];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
+    size_t req_len =
+        coreinit_cluster_scheduler_request_allocation_request_encode(
+            req, sizeof(req), &request);
     uint8_t resp[40];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_REQUEST_ALLOCATION, req,
+    if (!scheduler_call(METHOD_REQUEST_ALLOCATION, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 32) {
         if (out_resource_id) *out_resource_id = 0;
         return 0;
     }
-    const uint64_t *out = capnp_read_flat(resp);
-    if (out_resource_id) *out_resource_id = out[1];
-    return out[0] != 0;
+    const coreinit_cluster_scheduler_request_allocation_response_t *result =
+        coreinit_cluster_scheduler_request_allocation_response_read(resp);
+    if (out_resource_id) *out_resource_id = result->resource_id;
+    return result->ok != 0;
 }
 
 int scheduler_get_resource_info(uint64_t resource_id, uint64_t *out_owner_node,
@@ -227,12 +234,16 @@ int scheduler_get_resource_info(uint64_t resource_id, uint64_t *out_owner_node,
                                 uint64_t *out_capacity,
                                 uint64_t *out_sync_kind)
 {
-    uint64_t words[1] = {resource_id};
+    coreinit_cluster_scheduler_get_resource_info_request_t request = {
+        .resource_id = resource_id,
+    };
     uint8_t req[24];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 1);
+    size_t req_len =
+        coreinit_cluster_scheduler_get_resource_info_request_encode(
+            req, sizeof(req), &request);
     uint8_t resp[64];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_GET_RESOURCE_INFO, req,
+    if (!scheduler_call(METHOD_GET_RESOURCE_INFO, req,
                  req_len, resp, sizeof(resp), &resp_len) ||
         resp_len < 56) {
         if (out_owner_node) *out_owner_node = 0;
@@ -242,13 +253,14 @@ int scheduler_get_resource_info(uint64_t resource_id, uint64_t *out_owner_node,
         if (out_sync_kind) *out_sync_kind = 0;
         return 0;
     }
-    const uint64_t *out = capnp_read_flat(resp);
-    int found = out[0] != 0;
-    if (out_owner_node) *out_owner_node = out[1];
-    if (out_kind) *out_kind = out[2];
-    if (out_descriptor) *out_descriptor = out[3];
-    if (out_capacity) *out_capacity = out[4];
-    if (out_sync_kind) *out_sync_kind = out[5];
+    const coreinit_cluster_scheduler_get_resource_info_response_t *result =
+        coreinit_cluster_scheduler_get_resource_info_response_read(resp);
+    int found = result->found != 0;
+    if (out_owner_node) *out_owner_node = result->owner_node;
+    if (out_kind) *out_kind = result->kind;
+    if (out_descriptor) *out_descriptor = result->descriptor;
+    if (out_capacity) *out_capacity = result->capacity;
+    if (out_sync_kind) *out_sync_kind = result->sync_kind;
     return found;
 }
 
@@ -282,22 +294,27 @@ int scheduler_allocate_slice(uint64_t size, uint64_t kind, uint64_t sync_kind,
                              uint64_t self_job_id, uint64_t *out_resource_id,
                              uint64_t *out_base)
 {
-    uint64_t words[5] = {scheduler_node_id(), self_job_id, size, kind, sync_kind};
+    coreinit_cluster_scheduler_allocate_slice_request_t request = {
+        .node_id = scheduler_node_id(), .requesting_job_id = self_job_id,
+        .size = size, .kind = kind, .sync_kind = sync_kind,
+    };
     uint8_t req[64];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 5);
+    size_t req_len = coreinit_cluster_scheduler_allocate_slice_request_encode(
+        req, sizeof(req), &request);
     uint8_t resp[48];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_ALLOCATE_SLICE, req, req_len,
+    if (!scheduler_call(METHOD_ALLOCATE_SLICE, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 32) {
         if (out_resource_id) *out_resource_id = 0;
         if (out_base) *out_base = 0;
         return 0;
     }
-    const uint64_t *out = capnp_read_flat(resp);
-    if (out_resource_id) *out_resource_id = out[1];
-    if (out_base) *out_base = out[2];
-    return out[0] != 0;
+    const coreinit_cluster_scheduler_allocate_slice_response_t *result =
+        coreinit_cluster_scheduler_allocate_slice_response_read(resp);
+    if (out_resource_id) *out_resource_id = result->resource_id;
+    if (out_base) *out_base = result->base;
+    return result->ok != 0;
 }
 
 /* Must only be called while holding ALLOCATOR_MUTEX_ID. self_job_id
@@ -306,40 +323,49 @@ int scheduler_allocate_slice(uint64_t size, uint64_t kind, uint64_t sync_kind,
  * caller. */
 int scheduler_release_slice(uint64_t resource_id, uint64_t self_job_id)
 {
-    uint64_t words[2] = {resource_id, self_job_id};
+    coreinit_cluster_scheduler_release_slice_request_t request = {
+        .resource_id = resource_id, .requesting_job_id = self_job_id,
+    };
     uint8_t req[40];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
+    size_t req_len = coreinit_cluster_scheduler_release_slice_request_encode(
+        req, sizeof(req), &request);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_RELEASE_SLICE, req, req_len,
+    if (!scheduler_call(METHOD_RELEASE_SLICE, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
     }
-    return capnp_read_flat(resp)[0] != 0;
+    return coreinit_cluster_scheduler_release_slice_response_read(resp)->ok != 0;
 }
 
 int scheduler_mutex_try_lock(int mutex_id, uint64_t self_job_id)
 {
-    uint64_t words[2] = {(uint64_t)mutex_id, self_job_id};
+    coreinit_cluster_scheduler_mutex_try_lock_request_t request = {
+        .mutex_id = (uint64_t)mutex_id, .requesting_job_id = self_job_id,
+    };
     uint8_t req[40];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
+    size_t req_len = coreinit_cluster_scheduler_mutex_try_lock_request_encode(
+        req, sizeof(req), &request);
     uint8_t resp[24];
     size_t resp_len = 0;
-    if (!scheduler_call(CS_METHOD_MUTEX_TRY_LOCK, req, req_len,
+    if (!scheduler_call(METHOD_MUTEX_TRY_LOCK, req, req_len,
                  resp, sizeof(resp), &resp_len) ||
         resp_len < 24) {
         return 0;
     }
-    return capnp_read_flat(resp)[0] != 0;
+    return coreinit_cluster_scheduler_mutex_try_lock_response_read(resp)->ok != 0;
 }
 
 void scheduler_mutex_unlock(int mutex_id, uint64_t self_job_id)
 {
-    uint64_t words[2] = {(uint64_t)mutex_id, self_job_id};
+    coreinit_cluster_scheduler_mutex_unlock_request_t request = {
+        .mutex_id = (uint64_t)mutex_id, .requesting_job_id = self_job_id,
+    };
     uint8_t req[40];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 2);
-    scheduler_call(CS_METHOD_MUTEX_UNLOCK, req, req_len, NULL,
+    size_t req_len = coreinit_cluster_scheduler_mutex_unlock_request_encode(
+        req, sizeof(req), &request);
+    scheduler_call(METHOD_MUTEX_UNLOCK, req, req_len, NULL,
             0, NULL);
 }
 
@@ -349,32 +375,34 @@ void scheduler_run(void)
             "cluster scheduler -- this node is now a pull-based worker, "
             "no local job queue left to fall back on\n");
 
-    uint64_t self_req_words[1] = {scheduler_node_id()};
+    coreinit_cluster_scheduler_get_next_job_request_t next_request = {
+        .requesting_node_id = scheduler_node_id(),
+    };
     uint8_t self_req[24];
-    size_t self_req_len = capnp_build_flat(self_req, sizeof(self_req),
-                                           self_req_words, 1);
+    size_t self_req_len = coreinit_cluster_scheduler_get_next_job_request_encode(
+        self_req, sizeof(self_req), &next_request);
 
     for (;;) {
         uint8_t resp[64];
         size_t resp_len = 0;
-        if (!scheduler_call(CS_METHOD_GET_NEXT_JOB, self_req,
+        if (!scheduler_call(METHOD_GET_NEXT_JOB, self_req,
                      self_req_len, resp, sizeof(resp), &resp_len) ||
             resp_len < 56) {
             arch_cpu_wait_for_interrupt();
             continue;
         }
 
-        const uint64_t *out = capnp_read_flat(resp);
-        uint64_t found = out[0];
-        if (!found) {
+        const coreinit_cluster_scheduler_get_next_job_response_t *next =
+            coreinit_cluster_scheduler_get_next_job_response_read(resp);
+        if (!next->found) {
             if (g_idle_hook && g_idle_hook()) continue;
             arch_cpu_wait_for_interrupt();
             continue;
         }
 
-        uint64_t job_id = out[1];
-        uint64_t job_type = out[2];
-        uint64_t arg0 = out[3], arg1 = out[4];
+        uint64_t job_id = next->job_handle;
+        uint64_t job_type = next->job_type;
+        uint64_t arg0 = next->arg0, arg1 = next->arg1;
 
         job_result_t result = JOB_FINISHED;
         uint64_t block_id = 0;
@@ -390,12 +418,17 @@ void scheduler_run(void)
                     (unsigned)job_type);
         }
 
-        uint64_t report_words[4] = {job_id, (uint64_t)result, block_id,
-                                    result == JOB_FINISHED ? block_id : 0};
+        coreinit_cluster_scheduler_report_job_result_request_t report = {
+            .job_handle = job_id,
+            .result = (uint64_t)result,
+            .block_id = block_id,
+            .completion_value = result == JOB_FINISHED ? block_id : 0,
+        };
         uint8_t report_req[48];
         size_t report_req_len =
-            capnp_build_flat(report_req, sizeof(report_req), report_words, 4);
-        scheduler_call(CS_METHOD_REPORT_JOB_RESULT, report_req,
+            coreinit_cluster_scheduler_report_job_result_request_encode(
+                report_req, sizeof(report_req), &report);
+        scheduler_call(METHOD_REPORT_JOB_RESULT, report_req,
                 report_req_len, NULL, 0, NULL);
     }
 }
