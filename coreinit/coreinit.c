@@ -609,11 +609,30 @@ static job_result_t job_timer_bringup(void *ctx, uint64_t self_job_id,
             (uint32_t)timer_core_init(c->timer_hint, 0, g_kernel_invoke);
         hw_mutex_unlock();
     } else {
-        job_kprintf(self_job_id,
-                   "[coreinit]   not the BSP -- skipping the legacy PIC/PIT "
-                   "entirely, using the BSP's own published calibration "
-                   "instead\n");
+        /* irq_core_init() itself still touches genuinely shared hardware
+         * on every core that calls it (x86_64's pic_remap/pit_init/
+         * IRQ0+1 unmask; aarch64's gic_distributor_init reprograms the
+         * one shared GICD wholesale) -- "skipping the legacy PIC/PIT" is
+         * true of timer_core_init below (this branch calls
+         * lapic_timer_start, never lapic_timer_calibrate, so it touches
+         * only this core's own LAPIC/generic timer, same reasoning
+         * lapic_timer_x86_64.h's own comment already establishes), but
+         * NOT of irq_core_init, which was calling into that shared
+         * hardware completely unguarded here -- a real gap against
+         * hw_mutex_lock's own stated purpose ("every core's own
+         * irq_core_init() would otherwise reconfigure independently
+         * with zero arbitration"), caught by re-examining this file
+         * rather than introduced by it. Closed the same way the BSP
+         * branch above already does, using the AP-to-BSP proxy path
+         * coreinit_main already set up for exactly this
+         * (cs->hw_mutex_manager), not a new mechanism. */
+        hw_mutex_lock();
         irq_core_init(g_kernel_invoke);
+        hw_mutex_unlock();
+        job_kprintf(self_job_id,
+                   "[coreinit]   not the BSP -- using the BSP's own "
+                   "published calibration instead of touching the "
+                   "legacy PIT ourselves\n");
         timer_core_init(c->timer_hint,
                         (uint32_t)c->discovered_calibration,
                         g_kernel_invoke);
