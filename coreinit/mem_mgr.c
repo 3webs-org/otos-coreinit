@@ -168,6 +168,21 @@ void memory_manager_init_schema(void)
      * x86 real-mode trampoline at 0x8000. */
     claim_locked(BSP_MAILBOX_REGION_BASE + CORE_MAILBOX_OFFSET,
                  CORE_MAILBOX_SIZE, MEM_KIND_KERNEL_RESERVED);
+    /* The new boot protocol's own fixed destinations (see
+     * smp_layout.h's own comment on BOOT_PROTO_OBJECTS_BASE/
+     * SASKI_AP_POOL_BASE): the three MachineDescription/
+     * InitDescription/SaskiBootParams objects a loader copies here,
+     * and the pool saski itself bump-allocates AP stacks/page tables
+     * from. Both are reserved unconditionally, whether or not this
+     * boot actually came from a loader implementing the new protocol
+     * -- claimed simply by what they are, the same convention every
+     * other known-reserved region here already uses, so a future
+     * dynamic allocation can never land on top of them even on a
+     * build that never populates them. */
+    claim_locked(BOOT_PROTO_OBJECTS_BASE, BOOT_PROTO_OBJECTS_SIZE,
+                 MEM_KIND_KERNEL_RESERVED);
+    claim_locked(SASKI_AP_POOL_BASE, SASKI_AP_POOL_SIZE,
+                 MEM_KIND_KERNEL_RESERVED);
 #else
     claim_locked(0x8000, 0x1000, MEM_KIND_KERNEL_RESERVED); /* AP trampoline */
 #endif

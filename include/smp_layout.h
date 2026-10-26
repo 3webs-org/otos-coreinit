@@ -190,6 +190,44 @@
 #define CORE_PGTABLE_PD_OFF 0x2000ull
 #define CORE_PGTABLE_PD_HI_OFF 0x3000ull
 
+/* The new boot protocol's own fixed destinations (see
+ * include/boot_protocol.h) -- where a loader baking a compile-time
+ * MachineDescription/InitDescription/SaskiBootParams (otos-boot, for a
+ * known QEMU-virt-aarch64 target) copies them to, the same reasoning
+ * mkstub.py's own kernel copy already uses: the EFI stub's OWN load
+ * address is firmware's choice, not fixed, so anything that needs to
+ * stay valid after control passes to saski needs a real, fixed
+ * destination to be copied to, not just wherever the stub happened to
+ * land. Carved out of the same gap CORE_PGTABLE_OFFSET's own comment
+ * already describes (BSP_MAILBOX_REGION_BASE's generous slack ends at
+ * 0x41880000; CORE_REGION_BASE starts at 0x42000000 -- 7.5 MiB between
+ * them, of which this uses 1.0625 MiB).
+ *
+ * BOOT_PROTO_OBJECTS: generously sized (64 KiB) for the three tiny
+ * capnp/plain-struct objects a loader builds -- this is bookkeeping to
+ * catch collisions, not a tight fit, same convention mem_mgr.c's own
+ * reservations already use.
+ *
+ * SASKI_AP_POOL: the pool struct saski_boot_params itself points
+ * at -- memory reserved FOR SASKI'S OWN use (per-AP stacks, and on
+ * x86_64 per-AP page tables), not a pool init may allocate from (see
+ * that struct's own comment in boot_protocol.h). 1 MiB here is enough
+ * for a handful of APs at a modest per-core stack size; this pass
+ * only exercises the BSP path (SMP_CPUS=1), so nothing actually
+ * allocates from it yet -- sized for near-term SMP testing, not
+ * tightly to today's actual use.
+ *
+ * x86_64 equivalents are not yet chosen -- this project's boot-protocol
+ * work so far is aarch64-first (see otos-grub/otos-boot's own READMEs),
+ * and guessing an x86_64 address here before any x86_64 loader exists
+ * to use it would be exactly that, a guess. */
+#if defined(__aarch64__)
+#define BOOT_PROTO_OBJECTS_BASE 0x41880000ull
+#define BOOT_PROTO_OBJECTS_SIZE 0x00010000ull
+#define SASKI_AP_POOL_BASE 0x41890000ull
+#define SASKI_AP_POOL_SIZE 0x00100000ull
+#endif
+
 /* The allocatable window for the memory manager's own alloc/free
  * (mem_mgr.c methods 1/2) and the pool resource the allocator job owns
  * (cluster_scheduler.c) -- defined once, here, so both files agree
