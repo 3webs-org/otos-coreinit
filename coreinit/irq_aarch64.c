@@ -3,6 +3,7 @@
 #include "serial.h"
 #include "capnp_build.h"
 #include "schema.h"
+#include "core_state.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -44,13 +45,22 @@
  * but we only need a handful. */
 #define MAX_IRQ_HANDLERS 32
 
-/* IRQ line -> handler address. Zero means "no handler installed yet".
- * The EL1 vector's C dispatcher consults this table after GIC acknowledge. */
+/* IRQ line -> handler address, and IRQ line -> bound capability. Both
+ * tables are genuinely SHARED across cores, not per-core, despite SGIs/
+ * PPIs (every vector this table ever holds -- see MAX_IRQ_HANDLERS and
+ * irq_install_handler's own bounds check) being delivered through each
+ * core's own GICv3 redistributor: every core that installs a handler
+ * for a given vector installs the exact same function pointer, because
+ * the handler is shared, reentrant code (timer_core_init always installs
+ * &isr_arm_timer; cross_core_signal_install_handler always installs the
+ * one handler every core was given) -- so the table's CONTENT never
+ * actually varies by core, only the hardware enable bit does (that part
+ * genuinely is per-core; see irq_gicr_base in struct core_state below).
+ * g_irq_targets is shared for a different, stronger reason: it's bound
+ * through the single irq_manager object/capability, so "IRQ 30 -> target
+ * X" is one system-wide policy decision, not a per-core one -- any
+ * core's firing of IRQ 30 is meant to reach the same target. */
 static void *g_irq_handlers[MAX_IRQ_HANDLERS];
-
-/* IRQ line -> capability to invoke (method 0, message = IRQ number) on
- * every fire. handle 0 doubles as "unbound", same convention as everywhere
- * else caller/target identity is tracked in this project. */
 static capability_t g_irq_targets[MAX_IRQ_HANDLERS];
 
 static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
@@ -60,16 +70,20 @@ static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
 /* GIC distributor base address, discovered from the device tree by
  * topology_aarch64.c. Zero means "not yet configured" -- irq_core_init()
  * with base==0 reports and returns rather than faulting on a null pointer
- * dereference. This mirrors the design in serial_aarch64.c. */
+ * dereference. This mirrors the design in serial_aarch64.c.
+ *
+ * g_gicd_base/g_gicc_base/g_gicr_region(_size) are all correctly plain
+ * shared globals: the distributor is one system-wide device, and the
+ * redistributor REGION's base/size (as opposed to which FRAME within it
+ * belongs to this core -- see irq_gicr_base in core_state.h) is the same
+ * value discovered from the same device tree on every core. */
 static volatile uint8_t *g_gicd_base = NULL;
 static volatile uint8_t *g_gicc_base = NULL;
 static volatile uint8_t *g_gicr_region = NULL;
 static uint64_t g_gicr_region_size = 0;
-static volatile uint8_t *g_gicr_base = NULL;
 
 /* Physical timer (PPI 14) is INTID 30. */
 #define ARM_TIMER_IRQ 30
-static uint64_t g_tick_count = 0;
 extern char irq_aarch64_vectors[];
 
 /* Read a GICv3 CPU interface system register. These are accessed via MRS
@@ -235,7 +249,16 @@ void irq_aarch64_dispatch(void)
     }
 
     if (id == ARM_TIMER_IRQ) {
-        g_tick_count++;
+        /* This core's own dispatch of its own PPI 30 -- genuinely
+         * per-core (timer_aarch64.c's cs->timer_ticks counts the exact
+         * same event; this counter exists only to keep
+         * irq_get_tick_count()'s API meaningful per-core on aarch64 the
+         * way lapic_timer_x86_64.c relies on it being on x86_64). Benign
+         * to skip on NULL -- nothing on aarch64 reads this today. */
+        struct core_state *cs = core_state_get();
+        if (cs != NULL) {
+            cs->irq_tick_count++;
+        }
     }
     if (id < MAX_IRQ_HANDLERS) {
         void (*handler)(void) = (void (*)(void))g_irq_handlers[id];
@@ -275,6 +298,23 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
         return;
     }
 
+    /* Everything from here on configures what's genuinely THIS core's
+     * own interrupt delivery -- the redistributor frame found below is
+     * stored per-core (struct core_state), not in a shared global:
+     * each core's own MPIDR affinity resolves to a DIFFERENT frame
+     * within the shared g_gicr_region, so a shared global here would
+     * mean one core's discovery overwriting another's, silently
+     * misrouting enables to the wrong core's redistributor. No
+     * core_state means nowhere to keep that discovery, so fail closed
+     * (same posture as the "GIC base not set" check above) rather than
+     * configure interrupts this core has no safe place to track. */
+    struct core_state *cs = core_state_get();
+    if (cs == NULL) {
+        kprintf("[coreinit] irq_core_init: no core_state, skipping GIC "
+                "configuration\n");
+        return;
+    }
+
     /* Install the EL1 table before enabling any source. The earlier job
      * switch may restore DAIF.I=0 on a fresh job, so retaining firmware's
      * VBAR_EL1 even briefly after configuring the GIC is unsafe. */
@@ -289,31 +329,31 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
         __asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
         uint32_t affinity = ((uint32_t)(mpidr >> 32) & 0xffu) << 24 |
                             ((uint32_t)mpidr & 0xffffffu);
-        g_gicr_base = NULL;
+        cs->irq_gicr_base = NULL;
         for (uint64_t off = 0; g_gicr_region &&
              off + GICR_FRAME_SIZE <= g_gicr_region_size;
              off += GICR_FRAME_SIZE) {
             volatile uint8_t *frame = g_gicr_region + off;
             uint64_t typer = mmio_read64((const volatile void *)(frame + GICR_TYPER));
             if ((uint32_t)(typer >> 32) == affinity) {
-                g_gicr_base = frame;
+                cs->irq_gicr_base = frame;
                 break;
             }
             if (typer & (1ull << 4)) {
                 break; /* Last redistributor in this contiguous region. */
             }
         }
-        if (!g_gicr_base) {
+        if (!cs->irq_gicr_base) {
             kprintf("[coreinit] irq_core_init: GICv3 redistributor not found "
                     "for affinity 0x%x; IRQs remain masked\n", affinity);
             return;
         }
-        uint32_t waker = mmio_read32((const volatile void *)(g_gicr_base + GICR_WAKER));
-        mmio_write32((volatile void *)(g_gicr_base + GICR_WAKER),
+        uint32_t waker = mmio_read32((const volatile void *)(cs->irq_gicr_base + GICR_WAKER));
+        mmio_write32((volatile void *)(cs->irq_gicr_base + GICR_WAKER),
                      waker & ~(1u << 1)); /* ProcessorSleep = 0 */
         int ready = 0;
         for (unsigned i = 0; i < 1000000; i++) {
-            if (!(mmio_read32((const volatile void *)(g_gicr_base + GICR_WAKER)) &
+            if (!(mmio_read32((const volatile void *)(cs->irq_gicr_base + GICR_WAKER)) &
                   (1u << 2))) { /* ChildrenAsleep = 0 */
                 ready = 1;
                 break;
@@ -323,12 +363,12 @@ void irq_core_init(int (*kernel_invoke_fn)(capability_t, uint32_t, const void *,
             kprintf("[coreinit] irq_core_init: GICv3 redistributor did not wake\n");
             return;
         }
-        mmio_write32((volatile void *)(g_gicr_base + GICR_ICENABLER0),
+        mmio_write32((volatile void *)(cs->irq_gicr_base + GICR_ICENABLER0),
                      0xffffffffu);
-        mmio_write32((volatile void *)(g_gicr_base + GICR_IGROUPR0),
+        mmio_write32((volatile void *)(cs->irq_gicr_base + GICR_IGROUPR0),
                      0xffffffffu);
         for (int i = 0; i < 8; i++) {
-            mmio_write32((volatile void *)(g_gicr_base + GICR_IPRIORITYR + i * 4),
+            mmio_write32((volatile void *)(cs->irq_gicr_base + GICR_IPRIORITYR + i * 4),
                          0x80808080u);
         }
     }
@@ -348,13 +388,17 @@ void irq_install_handler(int vector, void *handler_addr)
     }
 
     /* The installed EL1 vector dispatches to this callback after
-     * acknowledging its GIC interrupt ID. */
+     * acknowledging its GIC interrupt ID. Shared across cores -- see
+     * g_irq_handlers' own top-of-file comment on why that's correct. */
     g_irq_handlers[vector] = handler_addr;
 
     /* SGIs/PPIs (<32) are per-core redistributor registers on GICv3;
-     * GICv2 uses the distributor's bank 0. SPIs (>=32) use GICD on both. */
-    if (g_gicr_base && vector < 32) {
-        mmio_write32((volatile void *)(g_gicr_base + GICR_ISENABLER0),
+     * GICv2 uses the distributor's bank 0. SPIs (>=32) use GICD on both.
+     * This part is genuinely per-core -- THIS core's own redistributor,
+     * from THIS core's own core_state, not the shared distributor. */
+    struct core_state *cs = core_state_get();
+    if (cs != NULL && cs->irq_gicr_base != NULL && vector < 32) {
+        mmio_write32((volatile void *)(cs->irq_gicr_base + GICR_ISENABLER0),
                      1u << vector);
         kprintf("[coreinit]   irq: installed handler for vector %d at %p, "
                 "enabled in GICR\n", vector, handler_addr);
@@ -372,7 +416,8 @@ void irq_install_handler(int vector, void *handler_addr)
 
 uint64_t irq_get_tick_count(void)
 {
-    return g_tick_count;
+    struct core_state *cs = core_state_get();
+    return cs != NULL ? cs->irq_tick_count : 0;
 }
 
 /* Set the GIC distributor base address. This is called by the aarch64

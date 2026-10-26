@@ -99,6 +99,27 @@ struct core_state {
      * MAX_STREAMED_PAGES/MAX_COW_PAGES/COW_POOL_SIZE -- there's no
      * shared header constant to enforce that, since pagefault.h
      * doesn't define one; checked by hand, not by the compiler. */
+    /* irq_aarch64.c's own per-core GICv3 state -- resolved, not just
+     * unmigrated, after real GICv3-semantics reasoning (see that file's
+     * own comments): g_irq_handlers/g_irq_targets stay plain shared
+     * globals (every core installs the identical handler for a given
+     * vector, and target bindings are a single system-wide policy via
+     * the one irq_manager object), but the REDISTRIBUTOR FRAME a core
+     * resolves for itself via its own MPIDR affinity is genuinely
+     * per-core -- a shared global there would mean one core's discovery
+     * silently overwriting another's. irq_tick_count is the aarch64
+     * side of a counter x86_64's own irq_x86_64.c still has as a plain
+     * global (not touched by this migration -- see TODO.md); kept
+     * per-core here to match irq_get_tick_count()'s API contract on
+     * this architecture even though nothing on aarch64 reads it today.
+     * x86_64 has no equivalent fields in this struct yet -- its own
+     * per-core IRQ state (g_idt/g_tss/g_fault_ist_stack/g_gdt_with_tss
+     * in irq_x86_64.c) is a separate, not-yet-started migration. */
+#if defined(__aarch64__)
+    volatile uint8_t *irq_gicr_base;
+    uint64_t irq_tick_count;
+#endif
+
 #if defined(__x86_64__)
     uint64_t pf_split_pt[512] __attribute__((aligned(4096)));
     uint64_t pf_split_region_base;
