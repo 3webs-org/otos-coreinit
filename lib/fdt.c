@@ -474,7 +474,9 @@ static int compatible_match(const char *list, uint32_t len, const char *want)
     return 0;
 }
 
-int fdt_node_by_compatible_offset(const void *blob, const char *compatible)
+int fdt_next_node_by_compatible_offset(const void *blob,
+                                       const char *compatible,
+                                       int previous_offset)
 {
     ctx_t c;
     if (!compatible || !ctx_init(blob, &c)) {
@@ -492,7 +494,7 @@ int fdt_node_by_compatible_offset(const void *blob, const char *compatible)
         int cur = stack[depth];
         uint32_t len = 0;
         const char *cp = (const char *)fdt_getprop(blob, cur, "compatible", &len);
-        if (cp && compatible_match(cp, len, compatible)) {
+        if (cur > previous_offset && cp && compatible_match(cp, len, compatible)) {
             return cur;
         }
         int ch = fdt_first_child(blob, cur);
@@ -527,6 +529,11 @@ int fdt_node_by_compatible_offset(const void *blob, const char *compatible)
             depth--;
         }
     }
+}
+
+int fdt_node_by_compatible_offset(const void *blob, const char *compatible)
+{
+    return fdt_next_node_by_compatible_offset(blob, compatible, FDT_ERR_NODE);
 }
 
 /* Reads one of a node's own cell-count properties, or returns -1 if absent. */

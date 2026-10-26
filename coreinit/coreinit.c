@@ -34,6 +34,9 @@
 #include "job_exec.h"
 #include "mem_mgr.h"
 #include "mutex_mgr.h"
+#include "network_device.h"
+#include "network_ether.h"
+#include "network_rpc.h"
 #include "pagefault.h"
 #include "pci.h"
 #include "proxy.h"
@@ -469,6 +472,75 @@ static void tick_counter_handler(void *data, uint32_t method_id,
         kprintf("[coreinit]   tick_counter: %u interrupts delivered as real "
                 "object invocations\n",
                 (unsigned)g_ticks_seen);
+    }
+}
+
+/* First genuine two-machine capability proof. Both machines create an
+ * ordinary Plain object. MAC ...:01 advertises and serves it; MAC ...:02
+ * discovers the advertisement, creates a routed LOCAL proxy, and invokes
+ * that proxy through its own kernel exactly like any local capability. */
+static void network_echo_handler(void *data, uint32_t method_id,
+                                 const void *msg, size_t len, void *response,
+                                 size_t response_cap, size_t *out_response_len)
+{
+    (void)data; (void)method_id; (void)len; (void)response;
+    (void)response_cap;
+    const uint64_t *words = capnp_read_flat(msg);
+    kprintf("[coreinit] NETWORK RPC SERVER: remote capability received "
+            "0x%llX\n", (unsigned long long)words[0]);
+    *out_response_len = 0;
+}
+
+static void network_two_machine_demo(void)
+{
+    if (!network_device_present()) return;
+    capability_t echo = create_object(network_echo_handler, NULL,
+                                      &g_plain_table,
+                                      PLAIN_SCHEMA_TICK_COUNTER);
+    if (!echo.handle) return;
+    const uint8_t *mac = network_device_mac();
+    uint64_t local_machine_node = mac[5];
+    if (mac[5] == 1) {
+        kprintf("[coreinit] NETWORK RPC SERVER: advertising capability "
+                "0x%llX as node %u\n",
+                (unsigned long long)echo.handle, (unsigned)local_machine_node);
+        for (uint32_t spins = 0; spins < 100000000u; spins++) {
+            if ((spins % 10000u) == 0)
+                network_ether_announce(local_machine_node, echo);
+            if (network_ether_serve_once(local_machine_node,
+                                         g_kernel_invoke)) {
+                kprintf("[coreinit] NETWORK RPC SERVER: response sent\n");
+                return;
+            }
+        }
+        kprintf("[coreinit] NETWORK RPC SERVER: timed out\n");
+    } else if (mac[5] == 2) {
+        uint64_t remote_node = 0;
+        capability_t remote = {0};
+        uint8_t remote_mac[6];
+        if (!network_ether_wait_announcement(&remote_node, &remote,
+                                             remote_mac)) {
+            kprintf("[coreinit] NETWORK RPC CLIENT: discovery timed out\n");
+            return;
+        }
+        network_ether_route_t route;
+        for (unsigned i = 0; i < 6; i++) route.peer_mac[i] = remote_mac[i];
+        network_rpc_session_t session;
+        network_rpc_session_init(&session, local_machine_node, remote_node,
+                                 network_ether_exchange, &route);
+        capability_t proxy = create_routed_proxy(
+            remote, network_rpc_invoke, &session, &g_plain_table,
+            PLAIN_SCHEMA_TICK_COUNTER);
+        uint64_t word = 0x5452414e53504152ull; /* "TRANSPAR" */
+        uint8_t req[24];
+        size_t req_len = capnp_build_flat(req, sizeof(req), &word, 1);
+        if (proxy.handle && g_kernel_invoke(proxy, 0, req, req_len,
+                                            NULL, 0, NULL)) {
+            kprintf("[coreinit] NETWORK RPC CLIENT: local proxy invocation "
+                    "completed through node %u\n", (unsigned)remote_node);
+        } else {
+            kprintf("[coreinit] NETWORK RPC CLIENT: invocation failed\n");
+        }
     }
 }
 
@@ -1284,6 +1356,19 @@ void coreinit_main(struct init_boot_info *info)
      * smp_aarch64.c's greeting-job affinity matches against. */
     uint64_t my_node_id = topology_self_id();
     serial_set_core_tag((int)my_node_id);
+
+    /* One physical machine owns one NIC instance; secondary cores reach its
+     * eventual network service through ordinary capabilities. For now the BSP
+     * initializes the polling device so the transport can be validated before
+     * introducing interrupts or a long-lived service job. */
+    if (is_bsp && info->fdt_blob_phys &&
+        network_device_init((const void *)(uintptr_t)info->fdt_blob_phys,
+                            my_node_id)) {
+        const uint8_t *mac = network_device_mac();
+        kprintf("[coreinit] virtio-net ready, MAC %X:%X:%X:%X:%X:%X\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        network_two_machine_demo();
+    }
 
     kprintf("[coreinit] stage 1: running on the single-syscall "
             "kernel_invoke model\n");

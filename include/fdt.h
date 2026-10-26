@@ -167,6 +167,14 @@ int fdt_parent_offset(const void *blob, int node_offset);
  * Returns FDT_ERR_NODE if nothing matches. */
 int fdt_node_by_compatible_offset(const void *blob, const char *compatible);
 
+/* Continues the same depth-first compatible search after `previous_offset`.
+ * Pass FDT_ERR_NODE for the first match. This is required for buses such as
+ * virtio-mmio where many sibling transports share one compatible string but
+ * expose different device ids at runtime. */
+int fdt_next_node_by_compatible_offset(const void *blob,
+                                       const char *compatible,
+                                       int previous_offset);
+
 /* Same search, reporting through an out-pointer: returns 1 when found and 0
  * when not, so "found nothing" cannot be confused with a valid offset of 0. */
 int fdt_node_by_compatible(const void *blob, const char *compatible,
