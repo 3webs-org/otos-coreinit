@@ -190,4 +190,31 @@ struct init_boot_info {
                                 * down at boot, before mem_mgr exists to
                                 * claim anything. */
     uint64_t free_memory_len;
+
+    /* The new boot-protocol handoff (see include/boot_protocol.h) --
+     * populated only by a loader implementing that protocol
+     * (otos-grub, otos-boot), zero/absent on every boot path that
+     * still exists in this repo today (GRUB's xnu loader, mkstub.py).
+     * machine_description_phys/init_description_phys are forwarded
+     * here unread -- saski copies the register values
+     * (aarch64 x1/x2, x86_64 rdi/rsi) straight into these two fields
+     * and never looks inside either object; only coreinit decodes
+     * them (coreinit/boot_protocol_decode.h). Once a real loader
+     * exists, free_memory_base/free_memory_len above should be sourced
+     * from MachineDescription's own freeMemoryBase/freeMemoryLen
+     * fields instead of wherever they come from today -- not changed
+     * in this pass, which only adds the new fields, not the wiring. */
+    uint64_t machine_description_phys;
+    uint64_t init_description_phys;
+    /* saski_pool_base/saski_pool_len: memory the loader set aside FOR
+     * SASKI'S OWN use (see struct saski_boot_params's own comment in
+     * boot_protocol.h for exactly what saski allocates from it --
+     * per-AP stacks, and on x86_64 per-AP page tables). Reported here
+     * purely so init's own memory manager marks this range reserved;
+     * init must never allocate from it -- that is what
+     * free_memory_base/free_memory_len above are for. 0/0 means "none
+     * supplied", the same convention every other optional field in
+     * this struct already uses. */
+    uint64_t saski_pool_base;
+    uint64_t saski_pool_len;
 };

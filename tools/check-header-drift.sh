@@ -5,7 +5,8 @@
 #   tools/check-header-drift.sh
 #
 # Compares include/ headers that are duplicated across both repos:
-#   - init_abi.h, smp_layout.h, ownership.h, memory_tokens.h, fdt.h
+#   - init_abi.h, smp_layout.h, ownership.h, memory_tokens.h, fdt.h,
+#     boot_protocol.h, capnp_list.h
 #   - lib/fdt.c (a verbatim source copy, not a header, duplicated for the
 #     same reason and carrying the same silent-divergence risk)
 #
@@ -35,7 +36,8 @@ echo ""
 DRIFT_DETECTED=0
 
 # Duplicated include/ headers
-for HEADER in init_abi.h smp_layout.h ownership.h memory_tokens.h fdt.h; do
+for HEADER in init_abi.h smp_layout.h ownership.h memory_tokens.h fdt.h \
+             boot_protocol.h capnp_list.h; do
     COREINIT_FILE="$ROOT/include/$HEADER"
     SASKI_FILE="$SASKI_ROOT/include/$HEADER"
     
