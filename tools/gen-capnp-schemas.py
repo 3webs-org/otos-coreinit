@@ -126,7 +126,8 @@ def abi(interfaces):
 
 def emit(interfaces, output, namespace):
     header = [f"/* Generated from schemas/{namespace}.capnp; do not edit. */",
-              "#pragma once", '#include "schema.h"', ""]
+              "#pragma once", '#include "schema.h"',
+              '#include "capnp_build.h"', ""]
     source = [f"/* Generated from schemas/{namespace}.capnp; do not edit. */",
               '#include "generated_schemas.h"', ""]
     initializers = []
@@ -138,6 +139,45 @@ def emit(interfaces, output, namespace):
         for method in interface["methods"]:
             macro = method_macro(interface["name"], method["name"])
             header.append(f"#define {macro} {method['id']}")
+            method_prefix = f"{namespace}_{prefix}_{snake(method['name'])}"
+            for side, fields_name in (("request", "params"),
+                                      ("response", "results")):
+                field_names = method[fields_name]
+                if not field_names:
+                    continue
+                type_name = f"{method_prefix}_{side}_t"
+                header.append(f"typedef struct {type_name} {{")
+                header.extend(f"    uint64_t {snake(field)};"
+                              for field in field_names)
+                header.append(f"}} {type_name};")
+                header.append(
+                    f"_Static_assert(sizeof({type_name}) == "
+                    f"{len(field_names)} * sizeof(uint64_t), "
+                    f"\"{type_name} must remain a flat cproto struct\");")
+                header.append(
+                    f"static inline size_t {method_prefix}_{side}_encode("
+                    f"void *buf, size_t cap, const {type_name} *value)")
+                header.append("{")
+                header.append(
+                    f"    return capnp_build_flat(buf, cap, "
+                    f"(const uint64_t *)value, {len(field_names)});")
+                header.append("}")
+                header.append(
+                    f"static inline const {type_name} *"
+                    f"{method_prefix}_{side}_read(const void *msg)")
+                header.append("{")
+                header.append(
+                    f"    return (const {type_name} *)capnp_read_flat(msg);")
+                header.append("}")
+                header.append(
+                    f"static inline const {type_name} *"
+                    f"{method_prefix}_{side}_read_exact(const void *msg, "
+                    f"size_t len)")
+                header.append("{")
+                header.append(
+                    f"    return (const {type_name} *)capnp_read_flat_exact("
+                    f"msg, len, {len(field_names)});")
+                header.append("}")
         header.append("")
         source.append(f"static const struct_schema_t {prefix}_structs[] = {{")
         source.extend(f"    {{{count}, 0, SCHEMA_IDX_NONE}}," for count in interface["words"])

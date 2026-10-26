@@ -67,7 +67,8 @@ with tempfile.TemporaryDirectory(prefix="coreinit-capnp-") as tmp:
     check_c = output / "check.c"
     check_c.write_text("\n".join(verifier) + "\n")
     executable = output / "check"
-    run(compiler, "-std=c11", f"-I{output}", f"-I{SASKI_KERNEL}",
+    run(compiler, "-std=c11", f"-I{output}", f"-I{ROOT / 'coreinit'}",
+        f"-I{SASKI_KERNEL}",
         str(output / "generated_schemas.c"), str(check_c), "-o", str(executable))
     run(str(executable))
 
@@ -118,7 +119,8 @@ int main(void) {
 }
 ''')
     executable = output / "check"
-    run(compiler, "-std=c11", f"-I{output}", f"-I{SASKI_KERNEL}",
+    run(compiler, "-std=c11", f"-I{output}", f"-I{ROOT / 'coreinit'}",
+        f"-I{SASKI_KERNEL}",
         str(output / "generated_schemas.c"), str(check_c), "-o", str(executable))
     run(str(executable))
     ipc_check = output / "check-user-ipc"

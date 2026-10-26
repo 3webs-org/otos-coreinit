@@ -1,7 +1,7 @@
 #include "network_ether.h"
 #include "network_device.h"
 #include "network_rpc.h"
-#include "capnp_build.h"
+#include "generated_schemas.h"
 
 #define ETH_HEADER 14u
 #define ETHERTYPE_HI 0x88u
@@ -50,9 +50,14 @@ int network_ether_announce(uint64_t local_node, uint64_t service,
 {
     uint8_t payload[48];
     uint8_t broadcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-    uint64_t words[4] = {ANNOUNCE_MAGIC, local_node, service,
-                         exported.handle};
-    size_t len = capnp_build_flat(payload, sizeof(payload), words, 4);
+    coreinit_network_discovery_announce_request_t announce = {
+        .magic = ANNOUNCE_MAGIC,
+        .node = local_node,
+        .service = service,
+        .capability = exported.handle,
+    };
+    size_t len = coreinit_network_discovery_announce_request_encode(
+        payload, sizeof(payload), &announce);
     return len && frame(broadcast, payload, len);
 }
 
@@ -64,11 +69,14 @@ int network_ether_wait_announcement(uint64_t service, uint64_t *out_node,
     for (uint32_t spins = 0; spins < 100000000u; spins++) {
         size_t len = 0;
         if (!poll(source, payload, sizeof(payload), &len)) continue;
-        const uint64_t *words = capnp_read_flat_exact(payload, len, 4);
-        if (!words || words[0] != ANNOUNCE_MAGIC || words[2] != service)
+        const coreinit_network_discovery_announce_request_t *announce =
+            coreinit_network_discovery_announce_request_read_exact(payload,
+                                                                    len);
+        if (!announce || announce->magic != ANNOUNCE_MAGIC ||
+            announce->service != service)
             continue;
-        *out_node = words[1];
-        out_capability->handle = words[3];
+        *out_node = announce->node;
+        out_capability->handle = announce->capability;
         copy_bytes(out_mac, source, 6);
         return 1;
     }

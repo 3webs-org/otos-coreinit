@@ -1,5 +1,5 @@
 #include "network_rpc.h"
-#include "capnp_build.h"
+#include "generated_schemas.h"
 
 static void copy_bytes(void *dst, const void *src, size_t n)
 {
@@ -25,28 +25,37 @@ static size_t envelope(uint8_t *p, size_t cap, uint32_t type,
                        uint32_t payload_len, uint32_t response_cap,
                        uint32_t status)
 {
-    uint64_t words[8] = {
-        NETWORK_RPC_MAGIC,
-        (uint64_t)NETWORK_RPC_VERSION | ((uint64_t)type << 32),
-        request_id, source, destination, target,
-        (uint64_t)method | ((uint64_t)payload_len << 32),
-        (uint64_t)response_cap | ((uint64_t)status << 32),
+    coreinit_network_rpc_envelope_route_request_t route = {
+        .magic = NETWORK_RPC_MAGIC,
+        .version_and_type =
+            (uint64_t)NETWORK_RPC_VERSION | ((uint64_t)type << 32),
+        .request_id = request_id,
+        .source_node = source,
+        .destination_node = destination,
+        .target_handle = target,
+        .method_and_payload_length =
+            (uint64_t)method | ((uint64_t)payload_len << 32),
+        .response_capacity_and_status =
+            (uint64_t)response_cap | ((uint64_t)status << 32),
     };
-    return capnp_build_flat(p, cap, words, 8);
+    return coreinit_network_rpc_envelope_route_request_encode(p, cap, &route);
 }
 
-static const uint64_t *read_envelope(const void *packet, size_t packet_len)
+static const coreinit_network_rpc_envelope_route_request_t *
+read_envelope(const void *packet, size_t packet_len)
 {
     if (packet_len < NETWORK_RPC_HEADER_SIZE) return NULL;
-    return capnp_read_flat_exact(packet, NETWORK_RPC_HEADER_SIZE, 8);
+    return coreinit_network_rpc_envelope_route_request_read_exact(
+        packet, NETWORK_RPC_HEADER_SIZE);
 }
 
 int network_rpc_is_response(const void *packet, size_t packet_len)
 {
-    const uint64_t *h = read_envelope(packet, packet_len);
-    return h && h[0] == NETWORK_RPC_MAGIC &&
-           (uint32_t)h[1] == NETWORK_RPC_VERSION &&
-           (uint32_t)(h[1] >> 32) == NETWORK_RPC_RESPONSE;
+    const coreinit_network_rpc_envelope_route_request_t *h =
+        read_envelope(packet, packet_len);
+    return h && h->magic == NETWORK_RPC_MAGIC &&
+           (uint32_t)h->version_and_type == NETWORK_RPC_VERSION &&
+           (uint32_t)(h->version_and_type >> 32) == NETWORK_RPC_RESPONSE;
 }
 
 int network_rpc_invoke(void *session_ctx, capability_t target,
@@ -74,17 +83,18 @@ int network_rpc_invoke(void *session_ctx, capability_t target,
     if (!s->exchange(s->exchange_ctx, request,
                      NETWORK_RPC_HEADER_SIZE + len, reply, sizeof(reply),
                      &reply_len)) return 0;
-    const uint64_t *rh = read_envelope(reply, reply_len);
-    if (!rh || rh[0] != NETWORK_RPC_MAGIC ||
-        (uint32_t)rh[1] != NETWORK_RPC_VERSION ||
-        (uint32_t)(rh[1] >> 32) != NETWORK_RPC_RESPONSE ||
-        rh[2] != id || rh[3] != s->remote_node ||
-        rh[4] != s->local_node) return 0;
+    const coreinit_network_rpc_envelope_route_request_t *rh =
+        read_envelope(reply, reply_len);
+    if (!rh || rh->magic != NETWORK_RPC_MAGIC ||
+        (uint32_t)rh->version_and_type != NETWORK_RPC_VERSION ||
+        (uint32_t)(rh->version_and_type >> 32) != NETWORK_RPC_RESPONSE ||
+        rh->request_id != id || rh->source_node != s->remote_node ||
+        rh->destination_node != s->local_node) return 0;
 
-    uint32_t payload_len = (uint32_t)(rh[6] >> 32);
+    uint32_t payload_len = (uint32_t)(rh->method_and_payload_length >> 32);
     if (payload_len > response_cap ||
         reply_len != NETWORK_RPC_HEADER_SIZE + payload_len ||
-        (uint32_t)(rh[7] >> 32) == 0) return 0;
+        (uint32_t)(rh->response_capacity_and_status >> 32) == 0) return 0;
     copy_bytes(response, reply + NETWORK_RPC_HEADER_SIZE, payload_len);
     if (out_response_len) *out_response_len = payload_len;
     return 1;
@@ -103,28 +113,30 @@ int network_rpc_serve(
         response_cap < NETWORK_RPC_HEADER_SIZE) return 0;
     const uint8_t *request = (const uint8_t *)request_buf;
     uint8_t *response = (uint8_t *)response_buf;
-    const uint64_t *h = read_envelope(request, request_len);
+    const coreinit_network_rpc_envelope_route_request_t *h =
+        read_envelope(request, request_len);
     if (!h) return 0;
-    uint32_t payload_len = (uint32_t)(h[6] >> 32);
-    uint32_t wanted = (uint32_t)h[7];
-    if (h[0] != NETWORK_RPC_MAGIC ||
-        (uint32_t)h[1] != NETWORK_RPC_VERSION ||
-        (uint32_t)(h[1] >> 32) != NETWORK_RPC_REQUEST ||
-        h[4] != local_node ||
+    uint32_t payload_len = (uint32_t)(h->method_and_payload_length >> 32);
+    uint32_t wanted = (uint32_t)h->response_capacity_and_status;
+    if (h->magic != NETWORK_RPC_MAGIC ||
+        (uint32_t)h->version_and_type != NETWORK_RPC_VERSION ||
+        (uint32_t)(h->version_and_type >> 32) != NETWORK_RPC_REQUEST ||
+        h->destination_node != local_node ||
         payload_len > NETWORK_RPC_MAX_PAYLOAD ||
         wanted > NETWORK_RPC_MAX_PAYLOAD ||
         request_len != NETWORK_RPC_HEADER_SIZE + payload_len ||
         response_cap < NETWORK_RPC_HEADER_SIZE + wanted) return 0;
 
-    capability_t target = {h[5]};
+    capability_t target = {h->target_handle};
     size_t result_len = 0;
-    int ok = local_invoke(target, (uint32_t)h[6],
+    int ok = local_invoke(target, (uint32_t)h->method_and_payload_length,
                           request + NETWORK_RPC_HEADER_SIZE, payload_len,
                           response + NETWORK_RPC_HEADER_SIZE, wanted,
                           &result_len);
     if (result_len > wanted) return 0;
-    if (envelope(response, response_cap, NETWORK_RPC_RESPONSE, h[2],
-                 local_node, h[3], target.handle, (uint32_t)h[6],
+    if (envelope(response, response_cap, NETWORK_RPC_RESPONSE, h->request_id,
+                 local_node, h->source_node, target.handle,
+                 (uint32_t)h->method_and_payload_length,
                  (uint32_t)result_len, 0, ok ? 1u : 0u) !=
         NETWORK_RPC_HEADER_SIZE) return 0;
     if (out_response_len)
