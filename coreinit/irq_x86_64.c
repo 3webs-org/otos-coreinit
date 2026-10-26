@@ -27,7 +27,11 @@ static idt_entry_t g_idt[IDT_ENTRIES];
 /* IRQ line -> capability to invoke (method 0, message = IRQ number) on
  * every fire. handle 0 doubles as "unbound", same
  * convention as everywhere else caller/target identity is tracked in
- * this project. */
+ * this project. Correctly a plain shared global, not per-core: IRQ0/
+ * IRQ1 are physically wired to the BSP only on standard PC hardware
+ * (see lapic_timer_x86_64.h's own comment on lapic_timer_calibrate),
+ * so an AP's own copy of this table would be permanently unreachable
+ * dead data -- not merely safe to share, but the only sensible choice. */
 static capability_t g_irq_targets[16];
 
 static int (*g_kernel_invoke)(capability_t target, uint32_t method_id,
@@ -125,6 +129,15 @@ struct interrupt_frame {
     uint64_t ss;
 };
 
+/* isr_irq0's own tick count. Same classification as g_irq_targets just
+ * above, confirmed by tracing the one real consumer
+ * (lapic_timer_x86_64.h's lapic_timer_calibrate, whose own comment
+ * states outright that "an AP's own copy of irq_get_tick_count() never
+ * increments no matter how long it waits"): isr_irq0 only ever actually
+ * fires on the BSP, so this is correctly a plain shared global, not a
+ * per-core field -- an earlier audit pass (see TODO.md) had flagged
+ * this as genuinely per-core without re-checking that assumption
+ * against where IRQ0 physically delivers; corrected here. */
 static uint64_t g_tick_count = 0;
 
 /* --- #DF (double fault) diagnostics via IST ---
