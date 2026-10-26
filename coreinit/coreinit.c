@@ -562,6 +562,24 @@ static job_result_t job_network_remote_demo(void *ctx, uint64_t self_job_id,
     return JOB_FINISHED;
 }
 
+/* A context that is a wire-safe value, not an address.  The coordinator
+ * submits it before the worker machine joins; the shared scheduler retains
+ * it and the remote worker later resolves the common job-type id locally. */
+static job_result_t job_network_scheduled_add(void *ctx,
+                                              uint64_t self_job_id,
+                                              uint64_t *out_block_id)
+{
+    (void)self_job_id; (void)out_block_id;
+    uint64_t packed = (uint64_t)(uintptr_t)ctx;
+    uint32_t left = (uint32_t)(packed >> 32);
+    uint32_t right = (uint32_t)packed;
+    uint32_t result = left + right;
+    kprintf("[coreinit] TRANSPARENT CLUSTER JOB: node 0x%llX executed %u + %u = %u%s\n",
+            (unsigned long long)scheduler_get_my_node_id(), left, right,
+            result, result == 42 ? " -- PASS" : " -- FAIL");
+    return JOB_FINISHED;
+}
+
 /* ---- The hardware mutex: guards genuinely shared, non-SMP-safe legacy
  * hardware (the PIC, the PIT) that every core's own irq_core_init() would
  * otherwise reconfigure independently with zero arbitration. Reaching
@@ -1301,6 +1319,8 @@ static void register_job_types(void)
     scheduler_register_job_type(JOB_TYPE_SECURINIT_BOOT, job_securinit_boot);
     scheduler_register_job_type(JOB_TYPE_NETWORK_REMOTE_DEMO,
                                 job_network_remote_demo);
+    scheduler_register_job_type(JOB_TYPE_NETWORK_SCHEDULED_ADD,
+                                job_network_scheduled_add);
 }
 
 void coreinit_main(struct init_boot_info *info)
@@ -1677,9 +1697,16 @@ void coreinit_main(struct init_boot_info *info)
 
     if (network_device_present()) {
         scheduler_set_idle_hook(network_service_poll);
-        if (g_network_machine_node == 2)
+        if (g_network_machine_node == 1) {
+            uint64_t packed_add = (20ull << 32) | 22ull;
+            scheduler_submit_to_node(2ull << 56,
+                                     JOB_TYPE_NETWORK_SCHEDULED_ADD,
+                                     packed_add, 210, 0,
+                                     RESOURCE_KIND_NONE, 0);
+        } else if (g_network_machine_node == 2) {
             scheduler_submit(JOB_TYPE_NETWORK_REMOTE_DEMO, NULL, 200, 0,
                              RESOURCE_KIND_NONE, 0);
+        }
     }
 
     if (have_topo) {
