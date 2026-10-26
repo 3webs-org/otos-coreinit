@@ -13,10 +13,10 @@
  * also requires a bounded reply/deduplication cache keyed by peer+request id;
  * a transport must not blindly retry after an ambiguous send. */
 #define NETWORK_RPC_MAGIC 0x4f544f5352504331ull /* "OTOSRPC1" */
-#define NETWORK_RPC_VERSION 1u
+#define NETWORK_RPC_VERSION 2u
 #define NETWORK_RPC_REQUEST 1u
 #define NETWORK_RPC_RESPONSE 2u
-#define NETWORK_RPC_HEADER_SIZE 64u
+#define NETWORK_RPC_HEADER_SIZE 80u /* flat Cap'n Proto root + eight words */
 #define NETWORK_RPC_MAX_PAYLOAD 4096u
 
 typedef int (*network_rpc_exchange_fn)(void *ctx,
@@ -41,6 +41,10 @@ int network_rpc_invoke(void *session_ctx, capability_t target,
                        uint32_t method_id, const void *msg, size_t len,
                        void *response, size_t response_cap,
                        size_t *out_response_len);
+
+/* Strictly validates the Cap'n Proto envelope and identifies a response.
+ * Used by packet carriers so they never hand-parse routing fields. */
+int network_rpc_is_response(const void *packet, size_t packet_len);
 
 /* Server half. Validates destination, bounds, version, and packet identity
  * before invoking a capability in this machine's local kernel. */

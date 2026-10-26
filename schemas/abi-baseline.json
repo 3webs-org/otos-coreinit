@@ -13,6 +13,20 @@
       2
     ]
   ],
+  "NetworkDiscovery": [
+    [
+      0,
+      4,
+      null
+    ]
+  ],
+  "NetworkRpcEnvelope": [
+    [
+      0,
+      8,
+      null
+    ]
+  ],
   "Disk": [
     [
       0,

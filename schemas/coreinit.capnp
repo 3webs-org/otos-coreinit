@@ -20,6 +20,21 @@ interface RemoteExecutor {
     (ok :UInt64, result :UInt64);
 }
 
+# Link discovery and routing envelopes are Cap'n Proto too.  They are carried
+# outside kernel_invoke, but use the same generated, versioned word shapes as
+# every capability method instead of a private packed-C/network header.
+interface NetworkDiscovery {
+  announce @0 (magic :UInt64, node :UInt64, service :UInt64,
+    capability :UInt64) -> ();
+}
+
+interface NetworkRpcEnvelope {
+  route @0 (magic :UInt64, versionAndType :UInt64, requestId :UInt64,
+    sourceNode :UInt64, destinationNode :UInt64, targetHandle :UInt64,
+    methodAndPayloadLength :UInt64,
+    responseCapacityAndStatus :UInt64) -> ();
+}
+
 interface Disk {
   read @0 (lba :UInt64) -> (
     word00 :UInt64, word01 :UInt64, word02 :UInt64, word03 :UInt64,

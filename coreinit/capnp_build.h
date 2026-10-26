@@ -59,3 +59,21 @@ static inline const uint64_t *capnp_read_flat(const void *msg)
     const uint8_t *b = (const uint8_t *)msg;
     return (const uint64_t *)(b + 16); /* skip 8-byte header + 8-byte root ptr */
 }
+
+/* Validates the exact single-segment, zero-pointer shape produced above.
+ * Network carriers use this before reading envelopes because they do not pass
+ * through kernel_invoke's schema validator. */
+static inline const uint64_t *capnp_read_flat_exact(const void *msg, size_t len,
+                                                     uint16_t n_words)
+{
+    if (!msg || len != 16u + (size_t)n_words * 8u) return NULL;
+    const uint8_t *b = (const uint8_t *)msg;
+    if (b[0] || b[1] || b[2] || b[3]) return NULL;
+    uint32_t segment_words = (uint32_t)b[4] | ((uint32_t)b[5] << 8) |
+                             ((uint32_t)b[6] << 16) |
+                             ((uint32_t)b[7] << 24);
+    if (segment_words != 1u + n_words) return NULL;
+    const uint64_t *wire = (const uint64_t *)(b + 8);
+    if (wire[0] != ((uint64_t)n_words << 32)) return NULL;
+    return wire + 1;
+}

@@ -1,6 +1,7 @@
 #include "network_ether.h"
 #include "network_device.h"
 #include "network_rpc.h"
+#include "capnp_build.h"
 
 #define ETH_HEADER 14u
 #define ETHERTYPE_HI 0x88u
@@ -13,21 +14,6 @@ static void copy_bytes(void *dst, const void *src, size_t len)
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
     for (size_t i = 0; i < len; i++) d[i] = s[i];
-}
-static void put64(uint8_t *p, uint64_t v)
-{
-    for (unsigned i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
-}
-static uint64_t get64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (unsigned i = 0; i < 8; i++) v |= (uint64_t)p[i] << (8 * i);
-    return v;
-}
-static uint32_t get32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 static int same_mac(const uint8_t a[6], const uint8_t b[6])
 {
@@ -62,13 +48,12 @@ static int poll(uint8_t source[6], void *payload, size_t cap, size_t *out_len)
 int network_ether_announce(uint64_t local_node, uint64_t service,
                            capability_t exported)
 {
-    uint8_t payload[32];
+    uint8_t payload[48];
     uint8_t broadcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-    put64(payload, ANNOUNCE_MAGIC);
-    put64(payload + 8, local_node);
-    put64(payload + 16, service);
-    put64(payload + 24, exported.handle);
-    return frame(broadcast, payload, sizeof(payload));
+    uint64_t words[4] = {ANNOUNCE_MAGIC, local_node, service,
+                         exported.handle};
+    size_t len = capnp_build_flat(payload, sizeof(payload), words, 4);
+    return len && frame(broadcast, payload, len);
 }
 
 int network_ether_wait_announcement(uint64_t service, uint64_t *out_node,
@@ -78,11 +63,12 @@ int network_ether_wait_announcement(uint64_t service, uint64_t *out_node,
     uint8_t payload[FRAME_CAP], source[6];
     for (uint32_t spins = 0; spins < 100000000u; spins++) {
         size_t len = 0;
-        if (!poll(source, payload, sizeof(payload), &len) || len != 32 ||
-            get64(payload) != ANNOUNCE_MAGIC ||
-            get64(payload + 16) != service) continue;
-        *out_node = get64(payload + 8);
-        out_capability->handle = get64(payload + 24);
+        if (!poll(source, payload, sizeof(payload), &len)) continue;
+        const uint64_t *words = capnp_read_flat_exact(payload, len, 4);
+        if (!words || words[0] != ANNOUNCE_MAGIC || words[2] != service)
+            continue;
+        *out_node = words[1];
+        out_capability->handle = words[3];
         copy_bytes(out_mac, source, 6);
         return 1;
     }
@@ -100,9 +86,7 @@ int network_ether_exchange(void *ctx, const void *request, size_t request_len,
         size_t len = 0;
         if (poll(source, response, response_cap, &len) &&
             same_mac(source, route->peer_mac) &&
-            len >= NETWORK_RPC_HEADER_SIZE &&
-            get64((const uint8_t *)response) == NETWORK_RPC_MAGIC &&
-            get32((const uint8_t *)response + 12) == NETWORK_RPC_RESPONSE) {
+            network_rpc_is_response(response, len)) {
             if (out_response_len) *out_response_len = len;
             return 1;
         }
