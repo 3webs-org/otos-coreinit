@@ -12,6 +12,7 @@
 void kprintf(const char *f, ...){va_list a;va_start(a,f);vprintf(f,a);va_end(a);}
 uint64_t gs, gi, gicc, gicr, gicr_size; void *gc;
 void serial_aarch64_set_base(uint64_t b){gs=b;} void irq_aarch64_set_base(uint64_t b){gi=b;} void irq_aarch64_set_cpu_base(uint64_t b){gicc=b;} void irq_aarch64_set_redistributor_region(uint64_t b,uint64_t n){gicr=b;gicr_size=n;} void cross_core_signal_aarch64_set_base(void*b){gc=b;} void cross_core_signal_aarch64_set_gic_v2(void){}
+void serial_aarch64_set_cadence_base(uint64_t b){gs=b;}
 int fdt_valid(const void*b,uint64_t s){return 0;}
 int main(int argc,char**argv){
   uint8_t *p=mmap(0,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);

@@ -9,11 +9,14 @@
  * backend's own file documents why -- so the topology backend (the
  * wiring point for this architecture) forward-declares them here. */
 void serial_aarch64_set_base(uint64_t base);
+void serial_aarch64_set_cadence_base(uint64_t base);
 void irq_aarch64_set_base(uint64_t base);
 void irq_aarch64_set_cpu_base(uint64_t base);
 void irq_aarch64_set_redistributor_region(uint64_t base, uint64_t size);
 void cross_core_signal_aarch64_set_base(void *base);
 void cross_core_signal_aarch64_set_gic_v2(void);
+
+static int g_uart_is_cadence;
 
 /* Read MPIDR_EL1 (Multiprocessor Affinity Register) to get this core's
  * own affinity identifier. This is the aarch64 equivalent of reading the
@@ -304,7 +307,10 @@ static void topology_wire_backends(const topology_t *out)
      * no wiring happens, and the IRQ backend keeps its no-op behavior
      * instead of faulting. */
     if (out->arch_opaque[0] != 0) {
-        serial_aarch64_set_base(out->arch_opaque[0]);
+        if (g_uart_is_cadence)
+            serial_aarch64_set_cadence_base(out->arch_opaque[0]);
+        else
+            serial_aarch64_set_base(out->arch_opaque[0]);
         kprintf("[coreinit]   topology: serial backend wired to UART at 0x%llX\n",
                 (unsigned long long)out->arch_opaque[0]);
     }
@@ -322,6 +328,8 @@ static void topology_wire_backends(const topology_t *out)
 
 int topology_discover(topology_t *out, uint64_t arch_hint)
 {
+    g_uart_is_cadence = 0;
+
     /* aarch64 implementation: arch_hint is the platform's machine
      * description -- a DTB or an ACPI RSDP (see topology_boot_hint). 0
      * means "none supplied" (distinct from "supplied but invalid"). The
@@ -423,15 +431,22 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
      *         an arch_opaque-only caller (smp_aarch64.c, which needs
      *         /psci) can reach the tree it was built from */
 
-    /* Find PL011 UART -- must be enabled (the DT has a second one marked
-     * disabled, which is deliberate test data). */
+    /* Find the platform console. Cadence UARTs are used by ZynqMP boards;
+     * PL011 remains the QEMU virt and ACPI SPCR backend. */
     int uart_offset = FDT_ERR_NODE;
-    if (fdt_node_by_compatible(blob, "arm,pl011", &uart_offset)) {
+    int uart_is_cadence =
+        fdt_node_by_compatible(blob, "cdns,uart-r1p12", &uart_offset) ||
+        fdt_node_by_compatible(blob, "xlnx,zynqmp-uart", &uart_offset);
+    if (!uart_is_cadence)
+        fdt_node_by_compatible(blob, "arm,pl011", &uart_offset);
+    if (uart_offset != FDT_ERR_NODE) {
         if (node_enabled(blob, uart_offset)) {
             fdt_range_t uart_range;
             if (fdt_reg_to_cpu_addr(blob, uart_offset, 0, &uart_range)) {
                 out->arch_opaque[0] = uart_range.base;
-                kprintf("[coreinit]   topology: PL011 UART at 0x%llX\n",
+                g_uart_is_cadence = uart_is_cadence;
+                kprintf("[coreinit]   topology: %s UART at 0x%llX\n",
+                       uart_is_cadence ? "Cadence" : "PL011",
                        (unsigned long long)uart_range.base);
             }
         }
@@ -443,7 +458,8 @@ int topology_discover(topology_t *out, uint64_t arch_hint)
     int gic_offset = FDT_ERR_NODE;
     int gic_v3 = fdt_node_by_compatible(blob, "arm,gic-v3", &gic_offset);
     if (!gic_v3 &&
-        !fdt_node_by_compatible(blob, "arm,cortex-a15-gic", &gic_offset)) {
+        !fdt_node_by_compatible(blob, "arm,cortex-a15-gic", &gic_offset) &&
+        !fdt_node_by_compatible(blob, "arm,gic-400", &gic_offset)) {
         fdt_node_by_compatible(blob, "arm,gic", &gic_offset);
     }
     if (gic_offset != FDT_ERR_NODE && node_enabled(blob, gic_offset)) {

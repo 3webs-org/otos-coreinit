@@ -7,8 +7,8 @@
  *
  * The root lives in struct core_state. That is required when APs execute the
  * same Mach-O image: an image-global root lets one AP erase or replace the
- * BSP's live translations. The sparse two-block map leaves everything above
- * 2 GiB inaccessible. */
+ * BSP's live translations. The complete 32-bit peripheral aperture is
+ * mapped; blocks without ordinary RAM use Device-nGnRE attributes. */
 #include "arch_mmu.h"
 #include "core_state.h"
 #include <stdint.h>
@@ -34,7 +34,7 @@ uint64_t arch_mmu_root_phys(void)
     return cs && cs->mmu_owned_map ? (uint64_t)(uintptr_t)cs->mmu_l1 : 0;
 }
 
-int arch_mmu_enable_identity_map(void)
+int arch_mmu_enable_identity_map(uint64_t kernel_invoke_addr)
 {
     uint64_t current_el, sctlr;
     __asm__ volatile("mrs %0, CurrentEL" : "=r"(current_el));
@@ -56,6 +56,21 @@ int arch_mmu_enable_identity_map(void)
     cs->mmu_l1[0] = DESC_BLOCK | DESC_AF | DESC_UXN | DESC_PXN;
     cs->mmu_l1[1] = ARM_RAM_BASE | DESC_BLOCK | DESC_AF | DESC_NORMAL |
                     DESC_INNER_SHAREABLE | DESC_UXN;
+    cs->mmu_l1[2] = 0x80000000ull | DESC_BLOCK | DESC_AF | DESC_UXN |
+                    DESC_PXN;
+    cs->mmu_l1[3] = 0xC0000000ull | DESC_BLOCK | DESC_AF | DESC_UXN |
+                    DESC_PXN;
+
+    /* The callable Saski image is ordinary executable RAM. On virt it
+     * shares block 1 with coreinit; RAM-at-zero boards place it in block 0.
+     * Mark the block containing the handed-over kernel entry accordingly so
+     * the first kernel_invoke callback cannot execute from Device/PXN space. */
+    unsigned kernel_block = (unsigned)(kernel_invoke_addr >> 30);
+    if (kernel_block < 4) {
+        cs->mmu_l1[kernel_block] = ((uint64_t)kernel_block << 30) |
+            DESC_BLOCK | DESC_AF | DESC_NORMAL | DESC_INNER_SHAREABLE |
+            DESC_UXN;
+    }
 
     /* MAIR index 0 = Device-nGnRE (0x04), index 1 = Normal WBWA (0xff).
      * 39-bit TTBR0 VA, 4 KiB granule, inner-shareable WB walks; TTBR1

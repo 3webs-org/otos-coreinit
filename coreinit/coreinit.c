@@ -1392,7 +1392,8 @@ void coreinit_main(struct init_boot_info *info)
     /* This core owns its identity map; the bootloader and PSCI supply none.
      * Keep the same physical addresses before and after enabling it, then
      * discover the UART from FDT or ACPI SPCR before the stage-1 print. */
-    int mmu_ready = arch_mmu_enable_identity_map();
+    int mmu_ready = arch_mmu_enable_identity_map(
+        (uint64_t)(uintptr_t)info->kernel_invoke);
     have_topo = topology_discover(&topo, topology_boot_hint(info));
     kprintf("[coreinit] aarch64 EL1 identity MMU: %s (root 0x%llX)\n",
             mmu_ready ? "enabled" : "unavailable",

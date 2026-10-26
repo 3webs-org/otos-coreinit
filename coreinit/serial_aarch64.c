@@ -28,6 +28,14 @@
 #define PL011_CR_TXE    (1 << 8)  /* Transmit enable */
 #define PL011_CR_RXE    (1 << 9)  /* Receive enable */
 
+#define CADENCE_CR 0x00
+#define CADENCE_CR_RX_DIS (1 << 3)
+#define CADENCE_CR_TX_EN (1 << 4)
+#define CADENCE_CR_TX_DIS (1 << 5)
+#define CADENCE_SR 0x2C
+#define CADENCE_FIFO 0x30
+#define CADENCE_SR_TXFULL (1 << 4)
+
 /* UART base address, discovered from device tree at runtime. Zero means
  * "not yet configured" -- serial_init() with base==0 sets g_ready=0 so
  * every output call becomes a cheap no-op rather than faulting or
@@ -40,6 +48,7 @@
  * initialized before the base address is known, and silently discard
  * output until the base is set. */
 static uint64_t g_pl011_base = 0;
+static int g_is_cadence = 0;
 static int g_ready = 0;
 
 /* core_tag now lives in struct core_state (see core_state.h's own note
@@ -59,6 +68,7 @@ void serial_set_core_tag(int core_id)
 void serial_aarch64_set_base(uint64_t base)
 {
     g_pl011_base = base;
+    g_is_cadence = 0;
     
     /* Disable UART during configuration */
     mmio_write32((volatile void *)(g_pl011_base + PL011_CR), 0);
@@ -83,6 +93,18 @@ void serial_aarch64_set_base(uint64_t base)
     g_ready = 1;
 }
 
+void serial_aarch64_set_cadence_base(uint64_t base)
+{
+    g_pl011_base = base;
+    g_is_cadence = 1;
+    uint32_t control = mmio_read32(
+        (const volatile void *)(g_pl011_base + CADENCE_CR));
+    control &= ~(CADENCE_CR_TX_DIS | CADENCE_CR_RX_DIS);
+    control |= CADENCE_CR_TX_EN;
+    mmio_write32((volatile void *)(g_pl011_base + CADENCE_CR), control);
+    g_ready = 1;
+}
+
 void serial_init(void)
 {
     /* If base address is not yet known, mark as not ready. Output calls
@@ -98,8 +120,11 @@ void serial_init(void)
 
 static int transmit_ready(void)
 {
-    uint32_t fr = mmio_read32((const volatile void *)(g_pl011_base + PL011_FR));
-    return !(fr & PL011_FR_TXFF);  /* Ready when FIFO is NOT full */
+    uint64_t status = g_is_cadence ? CADENCE_SR : PL011_FR;
+    uint32_t full = g_is_cadence ? CADENCE_SR_TXFULL : PL011_FR_TXFF;
+    uint32_t value = mmio_read32(
+        (const volatile void *)(g_pl011_base + status));
+    return !(value & full);  /* Ready when FIFO is NOT full */
 }
 
 static void putc(char c)
@@ -114,7 +139,8 @@ static void putc(char c)
     while (!transmit_ready()) {
     }
     
-    mmio_write32((volatile void *)(g_pl011_base + PL011_DR), (uint32_t)c);
+    mmio_write32((volatile void *)(g_pl011_base +
+                 (g_is_cadence ? CADENCE_FIFO : PL011_DR)), (uint32_t)c);
 }
 
 static void puts_raw(const char *s)

@@ -28,6 +28,6 @@ int arch_has_mmu(void);
  * tables before device discovery. Returns 1 when translation is active.
  * pml4_phys in init_boot_info remains x86-only; ARM obtains its own root
  * through arch_mmu_root_phys when fault handling needs it. */
-int arch_mmu_enable_identity_map(void);
+int arch_mmu_enable_identity_map(uint64_t kernel_invoke_addr);
 uint64_t arch_mmu_root_phys(void);
 #endif
