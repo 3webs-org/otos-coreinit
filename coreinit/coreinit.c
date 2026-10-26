@@ -479,41 +479,47 @@ static void tick_counter_handler(void *data, uint32_t method_id,
  * ordinary Plain object. MAC ...:01 advertises and serves it; MAC ...:02
  * discovers the advertisement, creates a routed LOCAL proxy, and invokes
  * that proxy through its own kernel exactly like any local capability. */
-static void network_echo_handler(void *data, uint32_t method_id,
-                                 const void *msg, size_t len, void *response,
-                                 size_t response_cap, size_t *out_response_len)
+static void network_executor_handler(void *data, uint32_t method_id,
+                                     const void *msg, size_t len,
+                                     void *response, size_t response_cap,
+                                     size_t *out_response_len)
 {
-    (void)data; (void)method_id; (void)len; (void)response;
-    (void)response_cap;
+    (void)data; (void)method_id; (void)len;
     const uint64_t *words = capnp_read_flat(msg);
-    kprintf("[coreinit] NETWORK RPC SERVER: remote capability received "
-            "0x%llX\n", (unsigned long long)words[0]);
-    *out_response_len = 0;
+    uint64_t out[2] = {0, 0};
+    if (words[0] == 1) {
+        out[0] = 1;
+        out[1] = words[1] + words[2];
+    }
+    kprintf("[coreinit] NETWORK JOB SERVER: type %u args %u,%u result %u\n",
+            (unsigned)words[0], (unsigned)words[1], (unsigned)words[2],
+            (unsigned)out[1]);
+    *out_response_len = capnp_build_flat(response, response_cap, out, 2);
 }
 
 static void network_two_machine_demo(void)
 {
     if (!network_device_present()) return;
-    capability_t echo = create_object(network_echo_handler, NULL,
-                                      &g_plain_table,
-                                      PLAIN_SCHEMA_TICK_COUNTER);
-    if (!echo.handle) return;
+    capability_t executor = create_object(network_executor_handler, NULL,
+                                          &g_remote_executor_table, 0);
+    if (!executor.handle) return;
     const uint8_t *mac = network_device_mac();
     uint64_t local_machine_node = mac[5];
     if (mac[5] == 1) {
-        kprintf("[coreinit] NETWORK RPC SERVER: advertising capability "
+        kprintf("[coreinit] NETWORK JOB SERVER: advertising executor "
                 "0x%llX as node %u\n",
-                (unsigned long long)echo.handle, (unsigned)local_machine_node);
+                (unsigned long long)executor.handle,
+                (unsigned)local_machine_node);
         for (uint32_t spins = 0; spins < 100000000u; spins++) {
             if ((spins % 10000u) == 0)
-                network_ether_announce(local_machine_node, echo);
+                network_ether_announce(local_machine_node, executor);
             if (network_ether_serve_once(local_machine_node,
                                          g_kernel_invoke)) {
-                kprintf("[coreinit] NETWORK RPC SERVER: response sent\n");
+                kprintf("[coreinit] NETWORK JOB SERVER: response sent\n");
                 return;
             }
         }
-        kprintf("[coreinit] NETWORK RPC SERVER: timed out\n");
+        kprintf("[coreinit] NETWORK JOB SERVER: timed out\n");
     } else if (mac[5] == 2) {
         uint64_t remote_node = 0;
         capability_t remote = {0};
@@ -529,17 +535,22 @@ static void network_two_machine_demo(void)
         network_rpc_session_init(&session, local_machine_node, remote_node,
                                  network_ether_exchange, &route);
         capability_t proxy = create_routed_proxy(
-            remote, network_rpc_invoke, &session, &g_plain_table,
-            PLAIN_SCHEMA_TICK_COUNTER);
-        uint64_t word = 0x5452414e53504152ull; /* "TRANSPAR" */
-        uint8_t req[24];
-        size_t req_len = capnp_build_flat(req, sizeof(req), &word, 1);
+            remote, network_rpc_invoke, &session, &g_remote_executor_table, 0);
+        uint64_t words[3] = {1, 20, 22};
+        uint8_t req[40], resp[32];
+        size_t req_len = capnp_build_flat(req, sizeof(req), words, 3);
+        size_t resp_len = 0;
         if (proxy.handle && g_kernel_invoke(proxy, 0, req, req_len,
-                                            NULL, 0, NULL)) {
-            kprintf("[coreinit] NETWORK RPC CLIENT: local proxy invocation "
-                    "completed through node %u\n", (unsigned)remote_node);
+                                            resp, sizeof(resp), &resp_len) &&
+            resp_len >= 32) {
+            const uint64_t *out = capnp_read_flat(resp);
+            kprintf("[coreinit] NETWORK JOB CLIENT: local proxy returned "
+                    "ok=%u result=%u through node %u%s\n",
+                    (unsigned)out[0], (unsigned)out[1],
+                    (unsigned)remote_node,
+                    (out[0] && out[1] == 42) ? " -- PASS" : " -- FAIL");
         } else {
-            kprintf("[coreinit] NETWORK RPC CLIENT: invocation failed\n");
+            kprintf("[coreinit] NETWORK JOB CLIENT: invocation failed\n");
         }
     }
 }

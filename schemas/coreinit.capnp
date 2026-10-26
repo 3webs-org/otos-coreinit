@@ -12,6 +12,14 @@ interface Plain {
   update @0 (value :UInt64) -> ();
 }
 
+# A location-transparent unit of computation. All arguments and results are
+# values on the wire; unlike cluster_job_t.ctx, nothing here is an address in
+# the submitting machine. Job type 1 is the initial proof (arg0 + arg1).
+interface RemoteExecutor {
+  run @0 (jobType :UInt64, arg0 :UInt64, arg1 :UInt64) ->
+    (ok :UInt64, result :UInt64);
+}
+
 interface Disk {
   read @0 (lba :UInt64) -> (
     word00 :UInt64, word01 :UInt64, word02 :UInt64, word03 :UInt64,
