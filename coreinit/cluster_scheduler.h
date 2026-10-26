@@ -97,15 +97,15 @@
  *   be yanked out from under work in progress; wait for it to finish
  *   (or block on it) first.
  *
- * Method 5 = submit_job: {node_affinity: u64, job_type: u64, ctx: u64,
- *   priority: u64, resource_id: u64, resource_kind: u64,
+ * Method 5 = submit_job: {node_affinity: u64, job_type: u64, arg0: u64,
+ *   arg1: u64, priority: u64, resource_id: u64, resource_kind: u64,
  *   resource_min_capacity: u64} -> {job_id: u64}. resource_id != 0
  *   requires exactly that resource; else resource_kind !=
  *   RESOURCE_KIND_NONE requires any free, owned-by-someone resource of
  *   that kind with capacity >= resource_min_capacity.
  *
  * Method 6 = get_next_job: {requesting_node_id: u64} -> {found: u64,
- *   job_id: u64, job_type: u64, ctx: u64}. Picks the
+ *   job_id: u64, job_type: u64, arg0: u64, arg1: u64}. Picks the
  *   highest-effective-priority eligible, unblocked job for that node
  *   whose resource requirement (if any) is currently satisfiable;
  *   reserves the matched resource to this job's id.
@@ -259,4 +259,3 @@ void cluster_scheduler_init_schema(
                            const void *msg, size_t len, void *response,
                            size_t response_cap, size_t *out_response_len),
     capability_t factory);
-

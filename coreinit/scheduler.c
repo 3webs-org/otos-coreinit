@@ -24,6 +24,7 @@
 #define CS_METHOD_RELEASE_SLICE 12
 
 static job_fn_t g_job_type_table[JOB_TYPE_COUNT];
+static job_value_fn_t g_job_value_type_table[JOB_TYPE_COUNT];
 
 static int (*g_invoke)(capability_t, uint32_t, const void *, size_t, void *,
                        size_t, size_t *);
@@ -41,6 +42,11 @@ void scheduler_register_job_type(job_type_t type, job_fn_t fn)
     if (type < JOB_TYPE_COUNT) {
         g_job_type_table[type] = fn;
     }
+}
+
+void scheduler_register_value_job_type(job_type_t type, job_value_fn_t fn)
+{
+    if (type < JOB_TYPE_COUNT) g_job_value_type_table[type] = fn;
 }
 
 void scheduler_client_init(
@@ -101,16 +107,18 @@ static int scheduler_call(uint32_t method_id, const void *msg, size_t len,
                   out_response_len);
 }
 
-static uint64_t submit(uint64_t node_affinity, job_type_t type, uint64_t ctx,
-                       int priority, uint64_t resource_id,
+static uint64_t submit(uint64_t node_affinity, job_type_t type,
+                       uint64_t arg0, uint64_t arg1, int priority,
+                       uint64_t resource_id,
                        uint64_t resource_kind, uint64_t resource_min_capacity)
 {
-    uint64_t words[7] = {node_affinity,       (uint64_t)type,
-                         ctx,                 (uint64_t)priority,
+    uint64_t words[8] = {node_affinity,       (uint64_t)type,
+                         arg0,                arg1,
+                         (uint64_t)priority,
                          resource_id,          resource_kind,
                          resource_min_capacity};
     uint8_t req[96];
-    size_t req_len = capnp_build_flat(req, sizeof(req), words, 7);
+    size_t req_len = capnp_build_flat(req, sizeof(req), words, 8);
     uint8_t resp[24];
     size_t resp_len = 0;
     if (!scheduler_call(CS_METHOD_SUBMIT_JOB, req, req_len,
@@ -126,8 +134,9 @@ uint64_t scheduler_submit(job_type_t type, void *ctx, int priority,
                           uint64_t resource_id, uint64_t resource_kind,
                           uint64_t resource_min_capacity)
 {
-    return submit(scheduler_node_id(), type, (uint64_t)(uintptr_t)ctx, priority,
-                 resource_id, resource_kind, resource_min_capacity);
+    return submit(scheduler_node_id(), type, (uint64_t)(uintptr_t)ctx, 0,
+                  priority, resource_id, resource_kind,
+                  resource_min_capacity);
 }
 
 uint64_t scheduler_submit_to_node(uint64_t target_node_id, job_type_t type,
@@ -135,8 +144,17 @@ uint64_t scheduler_submit_to_node(uint64_t target_node_id, job_type_t type,
                                   uint64_t resource_id, uint64_t resource_kind,
                                   uint64_t resource_min_capacity)
 {
-    return submit(target_node_id, type, ctx, priority, resource_id,
+    return submit(target_node_id, type, ctx, 0, priority, resource_id,
                  resource_kind, resource_min_capacity);
+}
+
+uint64_t scheduler_submit_values_to_node(
+    uint64_t target_node_id, job_type_t type, uint64_t arg0, uint64_t arg1,
+    int priority, uint64_t resource_id, uint64_t resource_kind,
+    uint64_t resource_min_capacity)
+{
+    return submit(target_node_id, type, arg0, arg1, priority, resource_id,
+                  resource_kind, resource_min_capacity);
 }
 
 uint64_t scheduler_declare_resource(uint64_t kind, uint64_t descriptor,
@@ -326,7 +344,7 @@ void scheduler_run(void)
         size_t resp_len = 0;
         if (!scheduler_call(CS_METHOD_GET_NEXT_JOB, self_req,
                      self_req_len, resp, sizeof(resp), &resp_len) ||
-            resp_len < 48) {
+            resp_len < 56) {
             arch_cpu_wait_for_interrupt();
             continue;
         }
@@ -341,12 +359,15 @@ void scheduler_run(void)
 
         uint64_t job_id = out[1];
         uint64_t job_type = out[2];
-        uint64_t ctx = out[3];
+        uint64_t arg0 = out[3], arg1 = out[4];
 
         job_result_t result = JOB_FINISHED;
         uint64_t block_id = 0;
-        if (job_type < JOB_TYPE_COUNT && g_job_type_table[job_type]) {
-            result = g_job_type_table[job_type]((void *)(uintptr_t)ctx,
+        if (job_type < JOB_TYPE_COUNT && g_job_value_type_table[job_type]) {
+            result = g_job_value_type_table[job_type](arg0, arg1, job_id,
+                                                      &block_id);
+        } else if (job_type < JOB_TYPE_COUNT && g_job_type_table[job_type]) {
+            result = g_job_type_table[job_type]((void *)(uintptr_t)arg0,
                                                 job_id, &block_id);
         } else {
             kprintf("[coreinit]   scheduler: got unknown job type %u, "

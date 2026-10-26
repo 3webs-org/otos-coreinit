@@ -26,6 +26,9 @@ typedef enum {
 
 typedef job_result_t (*job_fn_t)(void *ctx, uint64_t self_job_id,
                                  uint64_t *out_block_id);
+typedef job_result_t (*job_value_fn_t)(uint64_t arg0, uint64_t arg1,
+                                       uint64_t self_job_id,
+                                       uint64_t *out_block_id);
 
 /* A small, fixed vocabulary of job types -- every node registers the
  * SAME (type, fn) pairs during its own bootstrap, since every node runs
@@ -52,6 +55,7 @@ typedef enum {
 /* Registers the LOCAL function for a job type. Called once per node,
  * with the identical set of registrations everywhere. */
 void scheduler_register_job_type(job_type_t type, job_fn_t fn);
+void scheduler_register_value_job_type(job_type_t type, job_value_fn_t fn);
 
 /* Tells this node how to reach the cluster scheduler (local invoke if
  * this IS the BSP, remote invoke through the BSP's own kernel_invoke
@@ -84,15 +88,21 @@ uint64_t scheduler_submit(job_type_t type, void *ctx, int priority,
                           uint64_t resource_id, uint64_t resource_kind,
                           uint64_t resource_min_capacity);
 
-/* Submits a job targeting a SPECIFIC other node -- e.g. a BSP greeting a
- * newly-booted AP. ctx must be a plain value or a pointer into
- * genuinely shared memory (see cluster_scheduler.h's own note); a
- * pointer into the SUBMITTING node's private data would be exactly as
- * meaningless on the target as an untranslated function pointer. */
+/* Legacy one-word submission targeting a SPECIFIC other core in the same
+ * machine. ctx may be a plain value or genuinely shared-memory pointer; use
+ * scheduler_submit_values_to_node for every cross-machine job. */
 uint64_t scheduler_submit_to_node(uint64_t target_node_id, job_type_t type,
                                   uint64_t ctx, int priority,
                                   uint64_t resource_id, uint64_t resource_kind,
                                   uint64_t resource_min_capacity);
+
+/* Cross-machine-safe submission.  Both arguments are serialized UInt64
+ * values in cproto; the target resolves only the shared job-type id and never
+ * treats either word as an address. */
+uint64_t scheduler_submit_values_to_node(
+    uint64_t target_node_id, job_type_t type, uint64_t arg0, uint64_t arg1,
+    int priority, uint64_t resource_id, uint64_t resource_kind,
+    uint64_t resource_min_capacity);
 
 /* Declares a resource this node OWNS (a peripheral, most likely, at
  * this project's current stage -- CPU_CORE resources are created

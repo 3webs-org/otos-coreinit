@@ -357,7 +357,8 @@ static int resource_reassign(capability_t handle, uint64_t new_owner_node)
  * object in this file now has. */
 typedef struct {
     job_type_t type;
-    uint64_t ctx;
+    uint64_t arg0;
+    uint64_t arg1;
     int base_priority;
     int effective_priority;
     uint64_t node_affinity;
@@ -615,7 +616,8 @@ static capability_t mutex_object_for_id(int mutex_id)
 
 typedef struct {
     job_type_t type;
-    uint64_t ctx;
+    uint64_t arg0;
+    uint64_t arg1;
     int base_priority;
     int effective_priority;
     uint64_t node_affinity;
@@ -653,8 +655,9 @@ static void job_handler(void *data, uint32_t method_id, const void *msg,
     *out_response_len = 0;
 
     if (method_id == JOB_METHOD_GET_INFO) {
-        uint64_t out[13] = {(uint64_t)j->type,
-                            j->ctx,
+        uint64_t out[14] = {(uint64_t)j->type,
+                            j->arg0,
+                            j->arg1,
                             (uint64_t)(int64_t)j->base_priority,
                             (uint64_t)(int64_t)j->effective_priority,
                             j->node_affinity,
@@ -666,7 +669,7 @@ static void job_handler(void *data, uint32_t method_id, const void *msg,
                             (uint64_t)j->blocked,
                             (uint64_t)j->block_kind,
                             j->block_id};
-        *out_response_len = capnp_build_flat(response, response_cap, out, 13);
+        *out_response_len = capnp_build_flat(response, response_cap, out, 14);
     } else if (method_id == JOB_METHOD_UPDATE_SCHEDULING_STATE) {
         j->assigned_node = words[0];
         j->bound_resource_id = words[1];
@@ -692,7 +695,8 @@ static uint8_t g_job_storage[JOB_POOL_SIZE][CAP_RECORD_SIZE + sizeof(job_data_t)
 static volatile int g_job_storage_used[JOB_POOL_SIZE];
 static capability_t g_job_handles[JOB_POOL_SIZE];
 
-static capability_t create_job_object(job_type_t type, uint64_t ctx,
+static capability_t create_job_object(job_type_t type, uint64_t arg0,
+                                      uint64_t arg1,
                                       int priority, uint64_t node_affinity,
                                       uint64_t resource_id,
                                       uint64_t resource_kind,
@@ -714,7 +718,8 @@ static capability_t create_job_object(job_type_t type, uint64_t ctx,
     uint8_t *storage = g_job_storage[slot];
     job_data_t *jd = (job_data_t *)(storage + CAP_RECORD_SIZE);
     jd->type = type;
-    jd->ctx = ctx;
+    jd->arg0 = arg0;
+    jd->arg1 = arg1;
     jd->base_priority = priority;
     jd->effective_priority = priority;
     jd->node_affinity = node_affinity;
@@ -1281,14 +1286,16 @@ static void handle_reassign_resource(const uint64_t *words, void *response,
 static void handle_submit_job(const uint64_t *words, void *response,
                               size_t response_cap, size_t *out_len)
 {
-    uint64_t node_affinity = words[0], job_type = words[1], ctx = words[2];
-    int priority = (int)words[3];
-    uint64_t resource_id = words[4], resource_kind = words[5],
-            resource_min_capacity = words[6];
+    uint64_t node_affinity = words[0], job_type = words[1];
+    uint64_t arg0 = words[2], arg1 = words[3];
+    int priority = (int)words[4];
+    uint64_t resource_id = words[5], resource_kind = words[6],
+            resource_min_capacity = words[7];
 
-    capability_t job = create_job_object((job_type_t)job_type, ctx, priority,
-                                         node_affinity, resource_id,
-                                         resource_kind, resource_min_capacity);
+    capability_t job = create_job_object((job_type_t)job_type, arg0, arg1,
+                                         priority, node_affinity, resource_id,
+                                         resource_kind,
+                                         resource_min_capacity);
     if (job.handle == 0) {
         kprintf("[coreinit]   cluster_scheduler: submit_job failed, job "
                 "pool full\n");
@@ -1469,17 +1476,18 @@ static void handle_get_next_job(const uint64_t *words, void *response,
     job_data_t *j;
     pick_next_for_node(requesting_node_id, &job, &j);
 
-    uint64_t out[4];
+    uint64_t out[5];
     if (job.handle != 0) {
         out[0] = 1;
         out[1] = job.handle;
         out[2] = (uint64_t)j->type;
-        out[3] = j->ctx;
+        out[3] = j->arg0;
+        out[4] = j->arg1;
     } else {
         out[0] = 0;
-        out[1] = out[2] = out[3] = 0;
+        out[1] = out[2] = out[3] = out[4] = 0;
     }
-    *out_len = capnp_build_flat(response, response_cap, out, 4);
+    *out_len = capnp_build_flat(response, response_cap, out, 5);
 }
 
 static void handle_report_job_result(const uint64_t *words, size_t *out_len)

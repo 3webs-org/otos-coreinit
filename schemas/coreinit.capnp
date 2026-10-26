@@ -72,11 +72,11 @@ interface ClusterScheduler {
   declareResource @3 (nodeId :UInt64, kind :UInt64, descriptor :UInt64,
     capacity :UInt64, syncKind :UInt64) -> (resourceId :UInt64);
   reassignResource @4 (resourceId :UInt64, newOwnerNode :UInt64) -> (ok :UInt64);
-  submitJob @5 (nodeAffinity :UInt64, jobType :UInt64, ctx :UInt64,
-    priority :UInt64, resourceId :UInt64, resourceKind :UInt64,
+  submitJob @5 (nodeAffinity :UInt64, jobType :UInt64, arg0 :UInt64,
+    arg1 :UInt64, priority :UInt64, resourceId :UInt64, resourceKind :UInt64,
     resourceMinCapacity :UInt64) -> (jobId :UInt64);
   getNextJob @6 (requestingNodeId :UInt64) -> (found :UInt64,
-    jobHandle :UInt64, jobType :UInt64, ctx :UInt64);
+    jobHandle :UInt64, jobType :UInt64, arg0 :UInt64, arg1 :UInt64);
   reportJobResult @7 (jobHandle :UInt64, result :UInt64, blockId :UInt64) -> ();
   mutexTryLock @8 (mutexId :UInt64, requestingJobId :UInt64) -> (ok :UInt64);
   mutexUnlock @9 (mutexId :UInt64, requestingJobId :UInt64) -> ();
@@ -101,7 +101,7 @@ interface CsMutex {
 }
 
 interface Job {
-  getInfo @0 (unused :UInt64) -> (type :UInt64, ctx :UInt64,
+  getInfo @0 (unused :UInt64) -> (type :UInt64, arg0 :UInt64, arg1 :UInt64,
     basePriority :UInt64, effectivePriority :UInt64, nodeAffinity :UInt64,
     assignedNode :UInt64, resourceId :UInt64, resourceKind :UInt64,
     resourceMinCapacity :UInt64, boundResourceId :UInt64, blocked :UInt64,
