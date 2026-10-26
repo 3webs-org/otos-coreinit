@@ -38,8 +38,8 @@
   "ClusterScheduler": [
     [
       0,
-      4,
-      null
+      3,
+      1
     ],
     [
       1,
@@ -100,13 +100,23 @@
       12,
       2,
       1
+    ],
+    [
+      13,
+      1,
+      1
     ]
   ],
   "Node": [
     [
       0,
       1,
-      3
+      2
+    ],
+    [
+      1,
+      1,
+      null
     ]
   ],
   "CsMutex": [
@@ -174,6 +184,18 @@
       null
     ]
   ],
-    "El0ExceptionRouter": [[0, 1, 1]],
-    "Ring3ExceptionRouter": [[0, 4, 1]]
+  "El0ExceptionRouter": [
+    [
+      0,
+      1,
+      1
+    ]
+  ],
+  "Ring3ExceptionRouter": [
+    [
+      0,
+      4,
+      1
+    ]
+  ]
 }

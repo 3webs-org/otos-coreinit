@@ -1460,7 +1460,19 @@ void coreinit_main(struct init_boot_info *info)
                              cross_core_signal_my_target()};
     uint8_t reg_req[48];
     size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 3);
-    g_kernel_invoke(cluster_scheduler, 0, reg_req, reg_req_len, NULL, 0, NULL);
+    uint8_t reg_resp[24];
+    size_t reg_resp_len = 0;
+    g_kernel_invoke(cluster_scheduler, 0, reg_req, reg_req_len, reg_resp,
+                    sizeof(reg_resp), &reg_resp_len);
+    /* This node's own node-object handle -- kept for future use (no
+     * caller needs it yet; cluster_scheduler.c's preempt_node reaches
+     * any node, including this one, by node_id instead), the same
+     * "real and invokable, not a placeholder" posture as every other
+     * object handle logged in this function. */
+    struct core_state *my_node_cs = core_state_get();
+    if (my_node_cs != NULL && reg_resp_len >= 8) {
+        my_node_cs->my_node.handle = capnp_read_flat(reg_resp)[0];
+    }
 
     /* Join is identity only -- resources are this node's own to
      * declare afterward, the same declare_resource path everything

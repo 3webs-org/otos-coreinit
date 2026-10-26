@@ -58,6 +58,18 @@ struct core_state {
     capability_t hw_mutex_manager;
     uint64_t hw_mutex_id;
 
+    /* coreinit.c's own node-object capability, returned by join_node
+     * (cluster_scheduler.c's handle_join_node) once per core at
+     * cluster-join time. Genuinely per-core -- each core joins as its
+     * own node and gets back its own node object, never shared.
+     * cluster_scheduler.c's own preempt_node reaches any node (this one
+     * included) by node_id rather than this raw handle, so nothing
+     * reads this field yet -- kept for future use, same as every other
+     * object handle this project logs and holds onto rather than
+     * discarding. Zero-initialized default (no handle) is already
+     * correct -- no explicit reset needed in core_state_init_defaults. */
+    capability_t my_node;
+
     /* job_exec.c's own per-core cooperative scheduler: its job table,
      * the job-stack allocation bitmap, which slot is currently running
      * (-1 means none -- see core_state_init_defaults, same reasoning as

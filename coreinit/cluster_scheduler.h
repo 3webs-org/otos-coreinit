@@ -65,9 +65,13 @@
  * Method 0 = join_node: {node_id: u64, arch: u64,
  * signal_target: u64 (architecture-opaque -- see cross_core_signal.h;
  * this is how the cluster later reaches this node for an immediate
- * cross-core preemption signal)} ->
- *   no response. Implicitly declares a CPU_CORE resource, owned by that
- *   node, for it too.
+ * cross-core preemption signal)} -> {node_handle: u64 (0 on failure --
+ *   already joined, or the node pool is full)}. The returned handle is
+ *   this node's own node object (see cluster_scheduler.c's
+ *   node_handler) -- callers don't need it for anything today (see
+ *   preempt_node below, which reaches any node by id instead), but it's
+ *   real and invokable, not a placeholder. Implicitly declares a
+ *   CPU_CORE resource, owned by that node, for it too.
  *
  * Method 1 = leave_node: {node_id: u64} -> no response. Removes the
  *   node, and any resource it currently OWNS. Jobs whose node affinity
@@ -114,7 +118,17 @@
  *   {ok: u64}. Priority inheritance operates cluster-wide.
  *
  * Method 9 = mutex_unlock: {mutex_id: u64, requesting_job_id: u64} ->
- *   no response. */
+ *   no response.
+ *
+ * Method 13 = preempt_node: {node_id: u64} -> {ok: u64}. Looks node_id
+ *   up (node_find_by_id) and invokes NODE_METHOD_SIGNAL on it, which
+ *   calls cross_core_signal_send(that node's own signal_target) --
+ *   cross_core_signal.h's whole reason for existing: making a specific
+ *   OTHER core take an interrupt right now, immediate and real, not a
+ *   mailbox poll a busy core might not check for a while. The one
+ *   entry point for cluster-wide preemption by node_id; a caller never
+ *   needs the target's own raw node handle for this. ok=0 if node_id
+ *   isn't currently joined. */
 
 #define CLUSTER_ARCH_X86_64 0
 #define CLUSTER_ARCH_AARCH64 1
@@ -158,6 +172,14 @@
  * handle directly can invoke it without going through cluster_scheduler
  * as a middleman, the same way job_kprintf reserves the serial resource
  * for the duration of one print call. */
+
+/* A node object's own methods (see cluster_scheduler.c's node_handler):
+ * NODE_METHOD_GET_INFO: {unused: u64} -> {node_id: u64, arch: u64}.
+ * NODE_METHOD_SIGNAL: {unused: u64} -> no response. Sends this node's
+ * own cross-core preemption signal -- see preempt_node above for the
+ * one caller that reaches this today, by node_id rather than this raw
+ * handle. Both generated from schemas/coreinit.capnp's Node
+ * interface. */
 
 /* Mutex 0 is reserved for the memory allocator -- both
  * handle_allocate_slice and handle_release_slice assume the caller

@@ -39,7 +39,11 @@ void cross_core_signal_install_handler(void (*handler)(void));
  * Computed fresh by the architecture layer (on x86_64: this core's own
  * Local APIC ID); callers above this header just carry the returned
  * value around without inspecting it. Intended to be read once, at
- * cluster-join time, and handed to JOIN_NODE alongside node_id/arch/
- * region_base -- see coreinit.c's own join call and
- * cluster_scheduler.c's handle_join_node. */
+ * cluster-join time, and handed to JOIN_NODE alongside node_id/arch --
+ * see coreinit.c's own join call and cluster_scheduler.c's
+ * handle_join_node. Recorded there as node_data_t's own signal_target,
+ * read back by NODE_METHOD_SIGNAL (invoked by preempt_node) to actually
+ * reach this node again later, by node_id, from anywhere in the
+ * cluster -- the real implementation of this header's own stated
+ * purpose above. */
 uint64_t cross_core_signal_my_target(void);

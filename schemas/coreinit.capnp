@@ -41,8 +41,8 @@ interface Resource {
 }
 
 interface ClusterScheduler {
-  joinNode @0 (nodeId :UInt64, arch :UInt64, regionBase :UInt64,
-    signalTarget :UInt64) -> ();
+  joinNode @0 (nodeId :UInt64, arch :UInt64,
+    signalTarget :UInt64) -> (nodeHandle :UInt64);
   leaveNode @1 (nodeId :UInt64) -> ();
   requestAllocation @2 (nodeId :UInt64, base :UInt64, size :UInt64,
     kind :UInt64, syncKind :UInt64) -> (ok :UInt64, resourceId :UInt64);
@@ -64,11 +64,12 @@ interface ClusterScheduler {
     kind :UInt64, syncKind :UInt64) -> (ok :UInt64, resourceId :UInt64,
     base :UInt64);
   releaseSlice @12 (resourceId :UInt64, requestingJobId :UInt64) -> (ok :UInt64);
+  preemptNode @13 (nodeId :UInt64) -> (ok :UInt64);
 }
 
 interface Node {
-  getInfo @0 (unused :UInt64) -> (nodeId :UInt64, arch :UInt64,
-    regionBase :UInt64);
+  getInfo @0 (unused :UInt64) -> (nodeId :UInt64, arch :UInt64);
+  signal @1 (unused :UInt64) -> ();
 }
 
 interface CsMutex {

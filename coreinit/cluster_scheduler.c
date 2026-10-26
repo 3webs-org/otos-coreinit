@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "try_lock.h"
 #include "arch_cpu.h"
+#include "cross_core_signal.h"
 #include "../include/smp_layout.h"
 
 #define MAX_NODES 16
@@ -394,23 +395,35 @@ typedef struct {
                              * target() and recorded here verbatim --
                              * see cross_core_signal.h. Never
                              * interpreted by this file; only ever
-                             * handed back to cross_core_signal_send
-                             * when this node needs to be preempted
-                             * from elsewhere in the cluster. */
+                             * handed back to cross_core_signal_send via
+                             * NODE_METHOD_SIGNAL below, when this node
+                             * needs to be preempted from elsewhere in
+                             * the cluster. */
 } node_data_t;
 
 
 
+/* NODE_METHOD_GET_INFO/NODE_METHOD_SIGNAL are generated from
+ * schemas/coreinit.capnp's Node interface -- see generated_schemas.h.
+ * This capability is reachable through handle_join_node's own response
+ * (the caller's own node handle) and through node_find_by_id (any
+ * OTHER node's handle, looked up by id -- see handle_preempt_node
+ * below for the one caller that actually does this today). */
 static void node_handler(void *data, uint32_t method_id, const void *msg,
                          size_t len, void *response, size_t response_cap,
                          size_t *out_response_len)
 {
-    (void)method_id;
     (void)msg;
     (void)len;
     node_data_t *n = (node_data_t *)data;
-    uint64_t out[2] = {n->node_id, n->arch};
-    *out_response_len = capnp_build_flat(response, response_cap, out, 2);
+    *out_response_len = 0;
+
+    if (method_id == NODE_METHOD_GET_INFO) {
+        uint64_t out[2] = {n->node_id, n->arch};
+        *out_response_len = capnp_build_flat(response, response_cap, out, 2);
+    } else if (method_id == NODE_METHOD_SIGNAL) {
+        cross_core_signal_send(n->signal_target);
+    }
 }
 
 /* Nodes are physical cores -- MAX_NODES is a real, hardware-shaped
@@ -866,22 +879,25 @@ static void release_job_resource(capability_t job, uint64_t bound_resource_id)
     resource_release_reservation(bound, job.handle);
 }
 
-static void handle_join_node(const uint64_t *words, size_t *out_len)
+static void handle_join_node(const uint64_t *words, void *response,
+                             size_t response_cap, size_t *out_len)
 {
-    *out_len = 0;
     uint64_t node_id = words[0], arch = words[1];
     uint64_t signal_target = words[2];
+    uint64_t zero = 0;
 
     if (node_find_by_id(node_id).handle != 0) {
         kprintf("[coreinit]   cluster_scheduler: node %u already joined, "
                 "ignoring\n",
                 (unsigned)node_id);
+        *out_len = capnp_build_flat(response, response_cap, &zero, 1);
         return;
     }
     capability_t node_obj = create_node_object(node_id, arch, signal_target);
     if (node_obj.handle == 0) {
         kprintf("[coreinit]   cluster_scheduler: join failed, node pool "
                 "full\n");
+        *out_len = capnp_build_flat(response, response_cap, &zero, 1);
         return;
     }
     kprintf("[coreinit]   cluster_scheduler: node %u joined (node object "
@@ -889,6 +905,7 @@ static void handle_join_node(const uint64_t *words, size_t *out_len)
             "separately, see declare_resource\n",
             (unsigned)node_id, (unsigned)node_obj.handle, (unsigned)arch,
             (unsigned)signal_target);
+    *out_len = capnp_build_flat(response, response_cap, &node_obj.handle, 1);
 }
 
 static void handle_leave_node(const uint64_t *words, size_t *out_len)
@@ -966,6 +983,39 @@ static void handle_leave_node(const uint64_t *words, size_t *out_len)
             "cancelled, %d released back to the pool, its own owned "
             "resources removed\n",
             (unsigned)node_id, cancelled, released);
+}
+
+/* The directly-callable entry point for cross-node preemption: look up
+ * the target by node_id (an ordinary local invoke on this node object
+ * capability, same as any other caller of these objects -- see
+ * node_handler's own comment), then invoke NODE_METHOD_SIGNAL on it,
+ * which calls cross_core_signal_send(its own signal_target) --
+ * cross_core_signal.h's whole reason for existing, finally reachable
+ * from outside this file instead of only via coreinit.c's own
+ * self-test. Exposed here, on the widely-reachable cluster_scheduler
+ * object, rather than requiring every caller to first obtain the
+ * target node's own raw handle through some other discovery
+ * mechanism that doesn't exist yet. */
+static void handle_preempt_node(const uint64_t *words, void *response,
+                                size_t response_cap, size_t *out_len)
+{
+    uint64_t node_id = words[0];
+    capability_t node = node_find_by_id(node_id);
+    uint64_t ok = 0;
+    if (node.handle != 0) {
+        uint64_t signal_words[1] = {0};
+        uint8_t signal_req[24];
+        size_t signal_req_len =
+            capnp_build_flat(signal_req, sizeof(signal_req), signal_words, 1);
+        g_kernel_invoke(node, NODE_METHOD_SIGNAL, signal_req, signal_req_len,
+                       NULL, 0, NULL);
+        ok = 1;
+    } else {
+        kprintf("[coreinit]   cluster_scheduler: preempt_node for unknown "
+                "node %u, ignoring\n",
+                (unsigned)node_id);
+    }
+    *out_len = capnp_build_flat(response, response_cap, &ok, 1);
 }
 
 static void handle_request_allocation(const uint64_t *words, void *response,
@@ -1565,7 +1615,7 @@ void cluster_scheduler_handler(void *data, uint32_t method_id,
 
     switch (method_id) {
     case METHOD_JOIN_NODE:
-        handle_join_node(words, out_response_len);
+        handle_join_node(words, response, response_cap, out_response_len);
         break;
     case METHOD_LEAVE_NODE:
         handle_leave_node(words, out_response_len);
@@ -1584,6 +1634,9 @@ void cluster_scheduler_handler(void *data, uint32_t method_id,
         break;
     case METHOD_RELEASE_SLICE:
         handle_release_slice(words, response, response_cap, out_response_len);
+        break;
+    case METHOD_PREEMPT_NODE:
+        handle_preempt_node(words, response, response_cap, out_response_len);
         break;
     case METHOD_REASSIGN_RESOURCE:
         handle_reassign_resource(words, response, response_cap, out_response_len);
