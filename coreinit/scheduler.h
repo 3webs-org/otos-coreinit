@@ -139,6 +139,10 @@ int scheduler_get_resource_info(uint64_t resource_id, uint64_t *out_owner_node,
  * owner_node against "am I the owner". */
 uint64_t scheduler_get_my_node_id(void);
 
+/* Adds this machine's namespace to a hardware-local core id.  This keeps
+ * SMP affinity correct after a machine has joined a network-wide scheduler. */
+uint64_t scheduler_node_for_local_core(uint64_t local_core_id);
+
 /* The actual allocator: caller supplies only a size and kind, gets back
  * a resource_id and the base address mem_mgr's own alloc chose --
  * "mmap, not brk," see mem_mgr.h. Unlike scheduler_request_allocation

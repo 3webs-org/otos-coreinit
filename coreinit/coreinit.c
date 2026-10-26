@@ -479,9 +479,12 @@ static void tick_counter_handler(void *data, uint32_t method_id,
  * executor from the scheduler's idle loop; MAC ...:02 invokes it from an
  * ordinary scheduled job through a routed LOCAL proxy. */
 static capability_t g_network_executor;
+static capability_t g_network_scheduler;
 static uint64_t g_network_machine_node;
 static uint64_t g_network_owner_core;
 static uint32_t g_network_service_polls;
+static network_ether_route_t g_network_scheduler_route;
+static network_rpc_session_t g_network_scheduler_session;
 
 static void network_executor_handler(void *data, uint32_t method_id,
                                      const void *msg, size_t len,
@@ -505,10 +508,16 @@ static int network_service_poll(void)
 {
     if (g_network_machine_node != 1 || !g_network_executor.handle ||
         topology_self_id() != g_network_owner_core) return 0;
-    if ((g_network_service_polls++ & 0x3ffu) == 0)
-        network_ether_announce(g_network_machine_node, g_network_executor);
-    if (network_ether_serve_once(g_network_machine_node, g_kernel_invoke))
-        kprintf("[coreinit] NETWORK JOB SERVER: response sent from long-lived service\n");
+    if ((g_network_service_polls++ & 0x3ffu) == 0) {
+        network_ether_announce(g_network_machine_node,
+                               NETWORK_SERVICE_EXECUTOR,
+                               g_network_executor);
+        if (g_network_scheduler.handle)
+            network_ether_announce(g_network_machine_node,
+                                   NETWORK_SERVICE_CLUSTER_SCHEDULER,
+                                   g_network_scheduler);
+    }
+    network_ether_serve_once(g_network_machine_node, g_kernel_invoke);
     return 1; /* polling NIC: do not enter WFI */
 }
 
@@ -519,7 +528,8 @@ static job_result_t job_network_remote_demo(void *ctx, uint64_t self_job_id,
     uint64_t remote_node = 0;
     capability_t remote = {0};
     uint8_t remote_mac[6];
-    if (!network_ether_wait_announcement(&remote_node, &remote, remote_mac)) {
+    if (!network_ether_wait_announcement(NETWORK_SERVICE_EXECUTOR,
+                                         &remote_node, &remote, remote_mac)) {
         kprintf("[coreinit] NETWORK JOB CLIENT: discovery timed out\n");
         return JOB_FINISHED;
     }
@@ -1040,7 +1050,8 @@ static job_result_t job_stream_setup(void *ctx, uint64_t self_job_id,
     verify_ctx.stream_resource_id = stream_resource_id;
     verify_ctx.cow_resource_id = cow_resource_id;
     uint64_t verify_job = scheduler_submit_to_node(
-        1, JOB_TYPE_STREAM_COW_VERIFY, (uint64_t)(uintptr_t)&verify_ctx, 5, 0,
+        scheduler_node_for_local_core(1), JOB_TYPE_STREAM_COW_VERIFY,
+        (uint64_t)(uintptr_t)&verify_ctx, 5, 0,
         RESOURCE_KIND_NONE, 0);
     kprintf("[coreinit] submitted verification job 0x%X to node 1\n",
             (unsigned)verify_job);
@@ -1485,7 +1496,30 @@ void coreinit_main(struct init_boot_info *info)
      * except this one ALSO needs registering with, since it's the thing
      * that's supposed to know every core exists in the first place. */
     capability_t cluster_scheduler = {0};
-    if (is_bsp) {
+    if (is_bsp && g_network_machine_node == 2) {
+        uint64_t coordinator_node = 0;
+        capability_t remote_scheduler = {0};
+        uint8_t coordinator_mac[6];
+        kprintf("[coreinit] waiting to join network cluster coordinator\n");
+        if (network_ether_wait_announcement(
+                NETWORK_SERVICE_CLUSTER_SCHEDULER, &coordinator_node,
+                &remote_scheduler, coordinator_mac)) {
+            for (unsigned i = 0; i < 6; i++)
+                g_network_scheduler_route.peer_mac[i] = coordinator_mac[i];
+            network_rpc_session_init(&g_network_scheduler_session,
+                                     g_network_machine_node,
+                                     coordinator_node, network_ether_exchange,
+                                     &g_network_scheduler_route);
+            cluster_scheduler = create_routed_proxy(
+                remote_scheduler, network_rpc_invoke,
+                &g_network_scheduler_session, &g_cluster_scheduler_table,
+                CS_SCHEMA_CLUSTER_SCHEDULER);
+            kprintf("[coreinit] joined network cluster scheduler through local proxy 0x%X\n",
+                    (unsigned)cluster_scheduler.handle);
+        }
+        if (!cluster_scheduler.handle)
+            kprintf("[coreinit] network cluster coordinator unavailable\n");
+    } else if (is_bsp) {
         cluster_scheduler_init_schema(memory_manager, g_kernel_invoke,
                                       g_factory);
         cluster_scheduler = create_object(cluster_scheduler_handler, NULL,
@@ -1493,6 +1527,8 @@ void coreinit_main(struct init_boot_info *info)
                                           CS_SCHEMA_CLUSTER_SCHEDULER);
         kprintf("[coreinit] cluster_scheduler handle %u\n",
                 (unsigned)cluster_scheduler.handle);
+        if (g_network_machine_node == 1)
+            g_network_scheduler = cluster_scheduler;
     } else {
         capability_t remote_cluster_scheduler;
         remote_cluster_scheduler.handle = info->cluster_scheduler_handle;
@@ -1556,11 +1592,15 @@ void coreinit_main(struct init_boot_info *info)
     /* Keep the full id. APIC/MPIDR values already need more than eight bits
      * on real machines, and network admission will compose a machine id with
      * a local core id; truncating here would alias distinct cluster nodes. */
-    scheduler_client_init(g_kernel_invoke, cluster_scheduler, my_node_id);
+    uint64_t cluster_node_id = my_node_id;
+    if (g_network_machine_node)
+        cluster_node_id = (g_network_machine_node << 56) |
+                          (my_node_id & 0x00ffffffffffffffull);
+    scheduler_client_init(g_kernel_invoke, cluster_scheduler, cluster_node_id);
 
     /* The architecture code this node joins as -- resolved per-arch, like
      * everything else in topology. */
-    uint64_t reg_words[3] = {my_node_id, topology_cluster_arch(),
+    uint64_t reg_words[3] = {cluster_node_id, topology_cluster_arch(),
                              cross_core_signal_my_target()};
     uint8_t reg_req[48];
     size_t reg_req_len = capnp_build_flat(reg_req, sizeof(reg_req), reg_words, 3);
@@ -1607,8 +1647,16 @@ void coreinit_main(struct init_boot_info *info)
      * 0 owns it administratively; sync_kind is irrelevant here since
      * nothing ever transfers or streams it, only reserves it briefly. */
     if (is_bsp) {
-        g_serial_resource.handle = scheduler_declare_resource(
-            RESOURCE_KIND_PERIPHERAL, 0, 0, RESOURCE_SYNC_TRANSFER);
+        capability_t declared_serial = {scheduler_declare_resource(
+            RESOURCE_KIND_PERIPHERAL, 0, 0, RESOURCE_SYNC_TRANSFER)};
+        if (g_network_machine_node == 2) {
+            g_serial_resource = create_routed_proxy(
+                declared_serial, network_rpc_invoke,
+                &g_network_scheduler_session, &g_resource_table,
+                CS_SCHEMA_RESOURCE);
+        } else {
+            g_serial_resource = declared_serial;
+        }
         kprintf("[coreinit] serial resource declared, handle 0x%X\n",
                 (unsigned)g_serial_resource.handle);
     } else {

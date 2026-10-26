@@ -11,8 +11,12 @@ typedef struct {
     uint8_t peer_mac[6];
 } network_ether_route_t;
 
-int network_ether_announce(uint64_t local_node, capability_t exported);
-int network_ether_wait_announcement(uint64_t *out_node,
+#define NETWORK_SERVICE_EXECUTOR 1u
+#define NETWORK_SERVICE_CLUSTER_SCHEDULER 2u
+
+int network_ether_announce(uint64_t local_node, uint64_t service,
+                           capability_t exported);
+int network_ether_wait_announcement(uint64_t service, uint64_t *out_node,
                                     capability_t *out_capability,
                                     uint8_t out_mac[6]);
 int network_ether_exchange(void *ctx, const void *request, size_t request_len,

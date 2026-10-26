@@ -887,9 +887,9 @@ static void handle_join_node(const uint64_t *words, void *response,
     uint64_t zero = 0;
 
     if (node_find_by_id(node_id).handle != 0) {
-        kprintf("[coreinit]   cluster_scheduler: node %u already joined, "
+        kprintf("[coreinit]   cluster_scheduler: node 0x%llX already joined, "
                 "ignoring\n",
-                (unsigned)node_id);
+                (unsigned long long)node_id);
         *out_len = capnp_build_flat(response, response_cap, &zero, 1);
         return;
     }
@@ -900,10 +900,10 @@ static void handle_join_node(const uint64_t *words, void *response,
         *out_len = capnp_build_flat(response, response_cap, &zero, 1);
         return;
     }
-    kprintf("[coreinit]   cluster_scheduler: node %u joined (node object "
+    kprintf("[coreinit]   cluster_scheduler: node 0x%llX joined (node object "
             "0x%X), arch %u, signal_target %u -- resources declared "
             "separately, see declare_resource\n",
-            (unsigned)node_id, (unsigned)node_obj.handle, (unsigned)arch,
+            (unsigned long long)node_id, (unsigned)node_obj.handle, (unsigned)arch,
             (unsigned)signal_target);
     *out_len = capnp_build_flat(response, response_cap, &node_obj.handle, 1);
 }

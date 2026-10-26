@@ -231,7 +231,9 @@ void smp_bring_up_all(const topology_t *topo,
          * submitted with THIS specific AP's apic_id as the affinity, so
          * only it (not the BSP, not any other AP) is eligible to run
          * it. */
-        scheduler_submit_to_node(topo->cores[i].target, JOB_TYPE_GREET_FROM_BSP,
+        scheduler_submit_to_node(
+            scheduler_node_for_local_core(topo->cores[i].target),
+            JOB_TYPE_GREET_FROM_BSP,
                                  my_apic_id, 95, 0,
                                  RESOURCE_KIND_NONE, 0);
 

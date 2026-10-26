@@ -59,27 +59,30 @@ static int poll(uint8_t source[6], void *payload, size_t cap, size_t *out_len)
     return 1;
 }
 
-int network_ether_announce(uint64_t local_node, capability_t exported)
+int network_ether_announce(uint64_t local_node, uint64_t service,
+                           capability_t exported)
 {
-    uint8_t payload[24];
+    uint8_t payload[32];
     uint8_t broadcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     put64(payload, ANNOUNCE_MAGIC);
     put64(payload + 8, local_node);
-    put64(payload + 16, exported.handle);
+    put64(payload + 16, service);
+    put64(payload + 24, exported.handle);
     return frame(broadcast, payload, sizeof(payload));
 }
 
-int network_ether_wait_announcement(uint64_t *out_node,
+int network_ether_wait_announcement(uint64_t service, uint64_t *out_node,
                                     capability_t *out_capability,
                                     uint8_t out_mac[6])
 {
     uint8_t payload[FRAME_CAP], source[6];
     for (uint32_t spins = 0; spins < 100000000u; spins++) {
         size_t len = 0;
-        if (!poll(source, payload, sizeof(payload), &len) || len != 24 ||
-            get64(payload) != ANNOUNCE_MAGIC) continue;
+        if (!poll(source, payload, sizeof(payload), &len) || len != 32 ||
+            get64(payload) != ANNOUNCE_MAGIC ||
+            get64(payload + 16) != service) continue;
         *out_node = get64(payload + 8);
-        out_capability->handle = get64(payload + 16);
+        out_capability->handle = get64(payload + 24);
         copy_bytes(out_mac, source, 6);
         return 1;
     }

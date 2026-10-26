@@ -364,7 +364,8 @@ void smp_bring_up_all(const topology_t *topo,
 
             handoff->init_entry = info->init_entry_addr;
 
-            scheduler_submit_to_node(target, JOB_TYPE_GREET_FROM_BSP,
+            scheduler_submit_to_node(scheduler_node_for_local_core(target),
+                                     JOB_TYPE_GREET_FROM_BSP,
                                      my_mpidr, 95, 0,
                                      RESOURCE_KIND_NONE, 0);
             clean_to_poc((uint64_t)(uintptr_t)handoff, sizeof(*handoff));
@@ -485,7 +486,8 @@ void smp_bring_up_all(const topology_t *topo,
          * scheduler with its own MPIDR for a greeting to match its
          * recipient: a documented contract between the two ends of this one
          * call, honored by the later coreinit ARM-flow unit. */
-        scheduler_submit_to_node(target, JOB_TYPE_GREET_FROM_BSP,
+        scheduler_submit_to_node(scheduler_node_for_local_core(target),
+                                 JOB_TYPE_GREET_FROM_BSP,
                                  my_mpidr, 95, 0,
                                  RESOURCE_KIND_NONE, 0);
 

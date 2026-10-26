@@ -224,6 +224,12 @@ uint64_t scheduler_get_my_node_id(void)
     return scheduler_node_id();
 }
 
+uint64_t scheduler_node_for_local_core(uint64_t local_core_id)
+{
+    return (scheduler_get_my_node_id() & 0xff00000000000000ull) |
+           (local_core_id & 0x00ffffffffffffffull);
+}
+
 /* Method 11: node_id, size, kind, sync_kind -> ok, resource_id, base.
  * The "mmap, not brk" counterpart to scheduler_request_allocation --
  * caller supplies only a size, gets back both a resource_id (for
