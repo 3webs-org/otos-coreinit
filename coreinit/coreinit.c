@@ -570,13 +570,32 @@ static job_result_t job_network_scheduled_add(uint64_t left_word,
                                               uint64_t self_job_id,
                                               uint64_t *out_block_id)
 {
-    (void)self_job_id; (void)out_block_id;
+    (void)self_job_id;
     uint32_t left = (uint32_t)left_word;
     uint32_t right = (uint32_t)right_word;
     uint32_t result = left + right;
+    *out_block_id = result; /* completion value when JOB_FINISHED */
     kprintf("[coreinit] TRANSPARENT CLUSTER JOB: node 0x%llX executed %u + %u = %u%s\n",
             (unsigned long long)scheduler_get_my_node_id(), left, right,
             result, result == 42 ? " -- PASS" : " -- FAIL");
+    return JOB_FINISHED;
+}
+
+typedef struct { uint64_t remote_job_id; } network_result_waiter_t;
+
+static job_result_t job_network_result_waiter(void *ctx,
+                                              uint64_t self_job_id,
+                                              uint64_t *out_block_id)
+{
+    (void)self_job_id;
+    network_result_waiter_t *waiter = (network_result_waiter_t *)ctx;
+    uint64_t value = 0;
+    if (!scheduler_get_job_result(waiter->remote_job_id, &value)) {
+        *out_block_id = waiter->remote_job_id;
+        return JOB_BLOCKED_ON_JOB;
+    }
+    kprintf("[coreinit] TRANSPARENT CLUSTER RESULT: submitting node received %u%s\n",
+            (unsigned)value, value == 42 ? " -- PASS" : " -- FAIL");
     return JOB_FINISHED;
 }
 
@@ -1321,6 +1340,8 @@ static void register_job_types(void)
                                 job_network_remote_demo);
     scheduler_register_value_job_type(JOB_TYPE_NETWORK_SCHEDULED_ADD,
                                       job_network_scheduled_add);
+    scheduler_register_job_type(JOB_TYPE_NETWORK_RESULT_WAITER,
+                                job_network_result_waiter);
 }
 
 void coreinit_main(struct init_boot_info *info)
@@ -1698,9 +1719,14 @@ void coreinit_main(struct init_boot_info *info)
     if (network_device_present()) {
         scheduler_set_idle_hook(network_service_poll);
         if (g_network_machine_node == 1) {
-            scheduler_submit_values_to_node(
+            uint64_t remote_job = scheduler_submit_values_to_node(
                 2ull << 56, JOB_TYPE_NETWORK_SCHEDULED_ADD, 20, 22, 210, 0,
                 RESOURCE_KIND_NONE, 0);
+            static network_result_waiter_t waiter;
+            waiter.remote_job_id = remote_job;
+            if (remote_job)
+                scheduler_submit(JOB_TYPE_NETWORK_RESULT_WAITER, &waiter,
+                                 209, 0, RESOURCE_KIND_NONE, 0);
         } else if (g_network_machine_node == 2) {
             scheduler_submit(JOB_TYPE_NETWORK_REMOTE_DEMO, NULL, 200, 0,
                              RESOURCE_KIND_NONE, 0);

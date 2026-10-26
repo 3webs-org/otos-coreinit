@@ -49,7 +49,8 @@ typedef enum {
     JOB_TYPE_SECURINIT_BOOT = 9,
     JOB_TYPE_NETWORK_REMOTE_DEMO = 10,
     JOB_TYPE_NETWORK_SCHEDULED_ADD = 11,
-    JOB_TYPE_COUNT = 12,
+    JOB_TYPE_NETWORK_RESULT_WAITER = 12,
+    JOB_TYPE_COUNT = 13,
 } job_type_t;
 
 /* Registers the LOCAL function for a job type. Called once per node,
@@ -103,6 +104,9 @@ uint64_t scheduler_submit_values_to_node(
     uint64_t target_node_id, job_type_t type, uint64_t arg0, uint64_t arg1,
     int priority, uint64_t resource_id, uint64_t resource_kind,
     uint64_t resource_min_capacity);
+
+/* Reads a retained scalar completion produced by a finished value job. */
+int scheduler_get_job_result(uint64_t job_id, uint64_t *out_value);
 
 /* Declares a resource this node OWNS (a peripheral, most likely, at
  * this project's current stage -- CPU_CORE resources are created

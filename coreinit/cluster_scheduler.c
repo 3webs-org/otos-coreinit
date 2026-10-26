@@ -695,6 +695,32 @@ static uint8_t g_job_storage[JOB_POOL_SIZE][CAP_RECORD_SIZE + sizeof(job_data_t)
 static volatile int g_job_storage_used[JOB_POOL_SIZE];
 static capability_t g_job_handles[JOB_POOL_SIZE];
 
+typedef struct {
+    uint64_t job_handle;
+    uint64_t value;
+    int used;
+} completion_t;
+static completion_t g_completions[JOB_POOL_SIZE];
+static size_t g_completion_next;
+
+static void completion_record(uint64_t job_handle, uint64_t value)
+{
+    size_t slot = g_completion_next++ % JOB_POOL_SIZE;
+    g_completions[slot] = (completion_t){job_handle, value, 1};
+}
+
+static int completion_find(uint64_t job_handle, uint64_t *out_value)
+{
+    for (size_t i = 0; i < JOB_POOL_SIZE; i++) {
+        if (g_completions[i].used &&
+            g_completions[i].job_handle == job_handle) {
+            *out_value = g_completions[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static capability_t create_job_object(job_type_t type, uint64_t arg0,
                                       uint64_t arg1,
                                       int priority, uint64_t node_affinity,
@@ -1496,6 +1522,7 @@ static void handle_report_job_result(const uint64_t *words, size_t *out_len)
     capability_t job = {words[0]};
     job_result_t result = (job_result_t)words[1];
     uint64_t block_id = words[2];
+    uint64_t completion_value = words[3];
 
     if (result == JOB_FINISHED) {
         /* Read what's needed, then release the lock BEFORE calling
@@ -1511,6 +1538,9 @@ static void handle_report_job_result(const uint64_t *words, size_t *out_len)
         trylock_release(&g_storage_lock);
         if (!found) return;
         release_job_resource(job, bound_resource_id);
+        storage_lock_acquire_wait();
+        completion_record(job.handle, completion_value);
+        trylock_release(&g_storage_lock);
         destroy_job_object(job);
         return;
     }
@@ -1539,6 +1569,16 @@ static void handle_report_job_result(const uint64_t *words, size_t *out_len)
         }
     }
     trylock_release(&g_storage_lock);
+}
+
+static void handle_get_job_result(const uint64_t *words, void *response,
+                                  size_t response_cap, size_t *out_len)
+{
+    uint64_t out[2] = {0, 0};
+    storage_lock_acquire_wait();
+    out[0] = completion_find(words[0], &out[1]) ? 1 : 0;
+    trylock_release(&g_storage_lock);
+    *out_len = capnp_build_flat(response, response_cap, out, 2);
 }
 
 static void handle_mutex_try_lock(const uint64_t *words, void *response,
@@ -1657,6 +1697,10 @@ void cluster_scheduler_handler(void *data, uint32_t method_id,
         break;
     case METHOD_REPORT_JOB_RESULT:
         handle_report_job_result(words, out_response_len);
+        break;
+    case METHOD_GET_JOB_RESULT:
+        handle_get_job_result(words, response, response_cap,
+                              out_response_len);
         break;
     case METHOD_MUTEX_TRY_LOCK:
         handle_mutex_try_lock(words, response, response_cap, out_response_len);

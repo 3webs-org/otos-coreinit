@@ -77,7 +77,8 @@ interface ClusterScheduler {
     resourceMinCapacity :UInt64) -> (jobId :UInt64);
   getNextJob @6 (requestingNodeId :UInt64) -> (found :UInt64,
     jobHandle :UInt64, jobType :UInt64, arg0 :UInt64, arg1 :UInt64);
-  reportJobResult @7 (jobHandle :UInt64, result :UInt64, blockId :UInt64) -> ();
+  reportJobResult @7 (jobHandle :UInt64, result :UInt64, blockId :UInt64,
+    completionValue :UInt64) -> ();
   mutexTryLock @8 (mutexId :UInt64, requestingJobId :UInt64) -> (ok :UInt64);
   mutexUnlock @9 (mutexId :UInt64, requestingJobId :UInt64) -> ();
   getResourceInfo @10 (resourceId :UInt64) -> (found :UInt64,
@@ -88,6 +89,7 @@ interface ClusterScheduler {
     base :UInt64);
   releaseSlice @12 (resourceId :UInt64, requestingJobId :UInt64) -> (ok :UInt64);
   preemptNode @13 (nodeId :UInt64) -> (ok :UInt64);
+  getJobResult @14 (jobHandle :UInt64) -> (done :UInt64, value :UInt64);
 }
 
 interface Node {

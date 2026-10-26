@@ -22,6 +22,7 @@
 #define CS_METHOD_GET_RESOURCE_INFO 10
 #define CS_METHOD_ALLOCATE_SLICE 11
 #define CS_METHOD_RELEASE_SLICE 12
+#define CS_METHOD_GET_JOB_RESULT 14
 
 static job_fn_t g_job_type_table[JOB_TYPE_COUNT];
 static job_value_fn_t g_job_value_type_table[JOB_TYPE_COUNT];
@@ -155,6 +156,20 @@ uint64_t scheduler_submit_values_to_node(
 {
     return submit(target_node_id, type, arg0, arg1, priority, resource_id,
                   resource_kind, resource_min_capacity);
+}
+
+int scheduler_get_job_result(uint64_t job_id, uint64_t *out_value)
+{
+    uint8_t req[24], resp[32];
+    size_t req_len = capnp_build_flat(req, sizeof(req), &job_id, 1);
+    size_t resp_len = 0;
+    if (!scheduler_call(CS_METHOD_GET_JOB_RESULT, req, req_len, resp,
+                        sizeof(resp), &resp_len) || resp_len < 32)
+        return 0;
+    const uint64_t *out = capnp_read_flat(resp);
+    if (!out[0]) return 0;
+    if (out_value) *out_value = out[1];
+    return 1;
 }
 
 uint64_t scheduler_declare_resource(uint64_t kind, uint64_t descriptor,
@@ -375,10 +390,11 @@ void scheduler_run(void)
                     (unsigned)job_type);
         }
 
-        uint64_t report_words[3] = {job_id, (uint64_t)result, block_id};
+        uint64_t report_words[4] = {job_id, (uint64_t)result, block_id,
+                                    result == JOB_FINISHED ? block_id : 0};
         uint8_t report_req[48];
         size_t report_req_len =
-            capnp_build_flat(report_req, sizeof(report_req), report_words, 3);
+            capnp_build_flat(report_req, sizeof(report_req), report_words, 4);
         scheduler_call(CS_METHOD_REPORT_JOB_RESULT, report_req,
                 report_req_len, NULL, 0, NULL);
     }
